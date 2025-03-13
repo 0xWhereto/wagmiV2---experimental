@@ -85,6 +85,15 @@ const config: HardhatUserConfig = {
       gasMultiplier: 1.2,
       gasPrice: "auto",
     },
+    base: {
+      eid: EndpointId.BASE_V2_MAINNET,
+      url: "https://mainnet.base.org",
+      chainId: 8453,
+      gas: "auto",
+      gasMultiplier: 1.2,
+      gasPrice: "auto",
+      accounts: [`${process.env.PRIVATE_KEY}`],
+    },
   },
   mocha: {
     timeout: 100000,

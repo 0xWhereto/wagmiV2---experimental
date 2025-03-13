@@ -4,6 +4,11 @@
     "compile": "hardhat clean && hardhat compile",
     "test": "npx hardhat test --show-stack-traces --typecheck",
     "deploy": "npx hardhat run ./scripts/deploy.ts --network $npm_config_network",
+    "connect": "npx hardhat run ./scripts/connect.ts --network $npm_config_network",
+    "swap": "npx hardhat run ./scripts/swap.ts --network $npm_config_network",
+    "config:get": "npx hardhat lz:oapp:config:get --oapp-config sonic.layerzero.config.ts",
+    "peers:get": "npx hardhat lz:oapp:peers:get --oapp-config sonic.layerzero.config.ts",
+    "peers:set": "npx hardhat lz:oapp:wire --oapp-config layerzero.config.ts",
     "lint-fix": "prettier --write --plugin=prettier-plugin-solidity 'contracts/**/*.sol' && prettier --write 'scripts/**/*.ts' && prettier --write 'test/**/*.ts'"
   },
   "resolutions": {
@@ -19,6 +24,7 @@
     "@layerzerolabs/oapp-evm": "^0.3.1",
     "@layerzerolabs/solidity-examples": "1.1.0",
     "@layerzerolabs/toolbox-hardhat": "~0.6.7",
+    "@layerzerolabs/scan-client": "^0.0.8",
     "@nomicfoundation/hardhat-chai-matchers": "^1.0.0",
     "@nomiclabs/hardhat-ethers": "^2.2.3",
     "@nomicfoundation/hardhat-verify": "^2.0.13",

@@ -30,6 +30,9 @@ importers:
       '@layerzerolabs/oapp-evm':
         specifier: ^0.3.1
         version: 0.3.2(a06a10043ffe1861f10815f998a622bf)
+      '@layerzerolabs/scan-client':
+        specifier: ^0.0.8
+        version: 0.0.8(axios@1.8.2)
       '@layerzerolabs/solidity-examples':
         specifier: 1.1.0
         version: 1.1.0(@nomiclabs/hardhat-ethers@2.2.3(ethers@5.8.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(hardhat@2.22.19(bufferutil@4.0.9)(ts-node@10.9.2(@types/node@20.17.24)(typescript@5.8.2))(typescript@5.8.2)(utf-8-validate@5.0.10)))(@nomiclabs/hardhat-etherscan@3.1.8(hardhat@2.22.19(bufferutil@4.0.9)(ts-node@10.9.2(@types/node@20.17.24)(typescript@5.8.2))(typescript@5.8.2)(utf-8-validate@5.0.10)))(bufferutil@4.0.9)(ethers@5.8.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(ts-node@10.9.2(@types/node@20.17.24)(typescript@5.8.2))(typescript@5.8.2)(utf-8-validate@5.0.10)
@@ -426,6 +429,11 @@ packages:
       '@layerzerolabs/io-devtools': ~0.1.16
       '@layerzerolabs/lz-definitions': ^3.0.75
       zod: ^3.22.4
+
+  '@layerzerolabs/scan-client@0.0.8':
+    resolution: {integrity: sha512-V9vvt9GW0+AHoWXfOSNmZ9WUa28fVBmC93J/f9RLeDMEy5VR8srW2Du5pf1mMAg6ncEL0kQ1xkVCu+X6ARFBtQ==}
+    peerDependencies:
+      axios: '*'
 
   '@layerzerolabs/solidity-examples@1.1.0':
     resolution: {integrity: sha512-hh9FbWbnt/JEdzfM5s6+lv8DeOwQ+lU6b0cuTyCM0wulerUSqVVkBWfs1CKodwDvvbZdLV5BhTJl9AVflIDOHQ==}
@@ -3933,6 +3941,10 @@ snapshots:
       '@layerzerolabs/io-devtools': 0.1.16(ink-gradient@2.0.0(ink@3.2.0(bufferutil@4.0.9)(react@17.0.2)(utf-8-validate@5.0.10))(react@17.0.2))(ink-table@3.1.0(ink@3.2.0(bufferutil@4.0.9)(react@17.0.2)(utf-8-validate@5.0.10))(react@17.0.2))(ink@3.2.0(bufferutil@4.0.9)(react@17.0.2)(utf-8-validate@5.0.10))(react@17.0.2)(yoga-layout-prebuilt@1.10.0)(zod@3.24.2)
       '@layerzerolabs/lz-definitions': 3.0.75
       zod: 3.24.2
+
+  '@layerzerolabs/scan-client@0.0.8(axios@1.8.2)':
+    dependencies:
+      axios: 1.8.2(debug@4.4.0)
 
   '@layerzerolabs/solidity-examples@1.1.0(@nomiclabs/hardhat-ethers@2.2.3(ethers@5.8.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(hardhat@2.22.19(bufferutil@4.0.9)(ts-node@10.9.2(@types/node@20.17.24)(typescript@5.8.2))(typescript@5.8.2)(utf-8-validate@5.0.10)))(@nomiclabs/hardhat-etherscan@3.1.8(hardhat@2.22.19(bufferutil@4.0.9)(ts-node@10.9.2(@types/node@20.17.24)(typescript@5.8.2))(typescript@5.8.2)(utf-8-validate@5.0.10)))(bufferutil@4.0.9)(ethers@5.8.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(ts-node@10.9.2(@types/node@20.17.24)(typescript@5.8.2))(typescript@5.8.2)(utf-8-validate@5.0.10)':
     dependencies:
