@@ -10,13 +10,13 @@ npm run compile
 npm run test
 ```
 
-<div style="font-size: 12px;">
+<div style="font-size: 10px;">
 
 ### Synthetic Receiver (for get quote)
 
-| Network | ChainId | Eid   | Contract                   | Address                                                                                                                |
-| ------- | ------- | ----- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| SONIC   | 146     | 30332 | TestCrossChainSwapReceiver | [0x1bbcE9Fc68E47Cd3E4B6bC3BE64E271bcDb3edf1](https://sonicscan.org/address/0x1bbcE9Fc68E47Cd3E4B6bC3BE64E271bcDb3edf1) |
+| Network | ChainId | Eid   | Contract     | Address                                                                                                                |
+| ------- | ------- | ----- | ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| SONIC   | 146     | 30332 | SwapReceiver | [0x1bbcE9Fc68E47Cd3E4B6bC3BE64E271bcDb3edf1](https://sonicscan.org/address/0x1bbcE9Fc68E47Cd3E4B6bC3BE64E271bcDb3edf1) |
 
 ##### TokenAsynthetic: [0x1227D8C5Bc62fDdE7FB3c539688E316FA4b665AC](https://sonicscan.org/address/0x1227D8C5Bc62fDdE7FB3c539688E316FA4b665AC)
 
@@ -24,9 +24,9 @@ npm run test
 
 ### MockToken Senders
 
-| Network | ChainId | Eid   | Contract                 | Address                                                                                                               |
-| ------- | ------- | ----- | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| BASE    | 8453    | 30184 | TestCrossChainSwapSender | [0x5AafA963D0D448ba3bE2c5940F1778505AcA9512](https://basescan.org/address/0x5AafA963D0D448ba3bE2c5940F1778505AcA9512) |
+| Network | ChainId | Eid   | Contract   | Address                                                                                                               |
+| ------- | ------- | ----- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| BASE    | 8453    | 30184 | SwapSender | [0x5AafA963D0D448ba3bE2c5940F1778505AcA9512](https://basescan.org/address/0x5AafA963D0D448ba3bE2c5940F1778505AcA9512) |
 
 ##### TokenA: [0xa2C0a17Af854031C82d5649cf211D66c5dC3C95a](https://basescan.org/address/0xa2C0a17Af854031C82d5649cf211D66c5dC3C95a)
 
@@ -34,9 +34,9 @@ npm run test
 
 ##
 
-| Network  | ChainId | Eid   | Contract                 | Address                                                                                                              |
-| -------- | ------- | ----- | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| ARBITRUM | 42161   | 30110 | TestCrossChainSwapSender | [0x0b3095Cd06d649b66f38a7a17f02e8Ba000b7baF](https://arbiscan.io/address/0x0b3095Cd06d649b66f38a7a17f02e8Ba000b7baF) |
+| Network  | ChainId | Eid   | Contract   | Address                                                                                                              |
+| -------- | ------- | ----- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| ARBITRUM | 42161   | 30110 | SwapSender | [0x0b3095Cd06d649b66f38a7a17f02e8Ba000b7baF](https://arbiscan.io/address/0x0b3095Cd06d649b66f38a7a17f02e8Ba000b7baF) |
 
 ##### TokenA: [0xb8B6513f59fd537f372B4fccF0590aEA3B38b429](https://arbiscan.io/address/0xb8B6513f59fd537f372B4fccF0590aEA3B38b429)
 
