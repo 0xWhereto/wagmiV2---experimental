@@ -10,9 +10,9 @@ npm run compile
 npm run test
 ```
 
-### Synthetic Receiver (for get quote)
+<div style="font-size: 12px;">
 
-####
+### Synthetic Receiver (for get quote)
 
 | Network | ChainId | Eid   | Contract                   | Address                                                                                                                |
 | ------- | ------- | ----- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -53,3 +53,5 @@ npm run test
 │ arbitrum  │   ✓   │  ∅   │    ∅     │
 └───────────┴───────┴──────┴──────────┘
 ```
+
+</div>
