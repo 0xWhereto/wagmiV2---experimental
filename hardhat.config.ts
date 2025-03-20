@@ -11,6 +11,13 @@ import { EndpointId } from "@layerzerolabs/lz-definitions";
 
 const config: HardhatUserConfig = {
   defaultNetwork: "hardhat",
+  contractSizer: {
+    alphaSort: true,
+    disambiguatePaths: false,
+    runOnCompile: true,
+    strict: true,
+    only: ["GatewayVault", "SyntheticTokenHub"],
+  },
   paths: {
     sources: "./contracts",
     tests: "./test",
@@ -22,11 +29,11 @@ const config: HardhatUserConfig = {
       {
         version: "0.8.23",
         settings: {
-          viaIR: false,
+          viaIR: true,
           evmVersion: "paris",
           optimizer: {
             enabled: true,
-            runs: 999,
+            runs: 200,
           },
         },
       },

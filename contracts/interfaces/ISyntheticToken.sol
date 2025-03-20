@@ -10,10 +10,10 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  */
 interface ISyntheticToken is IERC20 {
     /**
-     * @notice Check if the token is synthetic
-     * @return true if the token is synthetic
+     * @notice Returns the token index
+     * @return The token index
      */
-    function isSyntheticToken() external view returns (bool);
+    function tokenIndex() external view returns (uint256);
 
     /**
      * @notice Mint new tokens
