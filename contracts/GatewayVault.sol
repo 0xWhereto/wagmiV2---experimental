@@ -10,8 +10,30 @@ import { OApp, MessagingFee, Origin } from "@layerzerolabs/oapp-evm/contracts/oa
 import { MessagingReceipt } from "@layerzerolabs/oapp-evm/contracts/oapp/OAppSender.sol";
 import { OAppOptionsType3 } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OAppOptionsType3.sol";
 
+// import { console } from "hardhat/console.sol";
+
 contract GatewayVault is OApp, OAppOptionsType3 {
     using TransferHelper for address;
+
+    enum MessageType {
+        Deposit,
+        Withdraw,
+        Swap,
+        LinkToken,
+        RevertSwap
+    }
+
+    struct SwapParams {
+        address from;
+        address to;
+        address syntheticTokenOut;
+        uint128 gasLimit;
+        uint32 dstEid;
+        uint256 value;
+        Asset[] assets;
+        bytes commands;
+        bytes[] inputs;
+    }
 
     struct Asset {
         address tokenAddress;
@@ -19,18 +41,16 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     }
 
     struct TokenSetupConfig {
+        bool onPause;
         address tokenAddress; // token address on the source chain
-        uint8 expectedDecimals; // decimals of the token on the destination chain
-    }
-
-    struct AssetEntry {
-        uint256 tokenIndex;
-        uint256 tokenAmount;
+        uint8 syntheticTokenDecimals; // decimals of the token on the destination chain
+        address syntheticTokenAddress; // address of the synthetic token on the destination chain
     }
 
     struct TokenDetail {
         bool onPause;
         int8 decimalsDelta;
+        address syntheticTokenAddress;
         address tokenAddress;
         uint8 tokenDecimals;
         string tokenSymbol;
@@ -40,11 +60,13 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     struct AvailableToken {
         bool onPause;
         address tokenAddress;
+        address syntheticTokenAddress;
         int8 decimalsDelta;
     }
 
     uint32 public immutable DST_EID;
     AvailableToken[] public availableTokens;
+    mapping(address => uint256) private _tokenIndexPlusOne;
 
     constructor(
         address _endpoint,
@@ -54,10 +76,24 @@ contract GatewayVault is OApp, OAppOptionsType3 {
         DST_EID = _dstEid;
     }
 
-    event TokenPaused(uint256 index, bool onPause);
-    event TokenEdited(uint256 index, AvailableToken availableToken);
-    event MessageSent(bytes32 guid, address recepient, Asset[] assets);
-    event MessageReceived(bytes32 guid, address recepient, Asset[] assets);
+    event TokenPaused(address tokenAddress, bool onPause);
+    event MessageSent(
+        MessageType messageType,
+        bytes32 guid,
+        address from,
+        address to,
+        Asset[] assets
+    );
+    event MessageReceived(
+        MessageType messageType,
+        uint32 srcEid,
+        bytes32 guid,
+        address from,
+        address to,
+        Asset[] assets
+    );
+    event ReceivedRevert(MessageType messageType, bytes32 guid, address from, string reason);
+    event AddNewTokens(bytes32 guid, AvailableToken[] newTokens);
 
     function getAvailableTokenLength() public view returns (uint256) {
         return availableTokens.length;
@@ -66,93 +102,145 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     function getAllAvailableTokens() public view returns (TokenDetail[] memory) {
         TokenDetail[] memory availableTokenDetails = new TokenDetail[](availableTokens.length);
         for (uint256 i = 0; i < availableTokens.length; i++) {
-            address tokenAddress = availableTokens[i].tokenAddress;
-            availableTokenDetails[i] = TokenDetail({
-                onPause: availableTokens[i].onPause,
-                decimalsDelta: availableTokens[i].decimalsDelta,
-                tokenAddress: tokenAddress,
-                tokenDecimals: IERC20Metadata(tokenAddress).decimals(),
-                tokenSymbol: IERC20Metadata(tokenAddress).symbol(),
-                tokenBalance: IERC20(tokenAddress).balanceOf(address(this))
-            });
+            availableTokenDetails[i] = _getAllAvailableTokenByIndex(i);
         }
         return availableTokenDetails;
     }
 
-    function pauseToken(uint256 _index, bool _onPause) external onlyOwner {
+    function getAllAvailableTokenByAddress(
+        address _tokenAddress
+    ) public view returns (TokenDetail memory) {
+        uint256 _index = getTokenIndex(_tokenAddress);
+        return _getAllAvailableTokenByIndex(_index);
+    }
+
+    function getTokenIndex(address _tokenAddress) public view returns (uint256) {
+        require(_tokenIndexPlusOne[_tokenAddress] > 0, "Token not found");
+        return _tokenIndexPlusOne[_tokenAddress] - 1;
+    }
+
+    function pauseToken(address _tokenAddress, bool _onPause) external onlyOwner {
+        uint256 _index = getTokenIndex(_tokenAddress);
         availableTokens[_index].onPause = _onPause;
-        emit TokenPaused(_index, _onPause);
+        emit TokenPaused(_tokenAddress, _onPause);
     }
 
-    function addAvailableTokens(TokenSetupConfig[] memory _tokenConfigs) external onlyOwner {
-        for (uint256 i = 0; i < _tokenConfigs.length; i++) {
-            uint8 tokenDecimals = IERC20Metadata(_tokenConfigs[i].tokenAddress).decimals();
-            availableTokens.push(
-                AvailableToken({
-                    onPause: false,
-                    tokenAddress: _tokenConfigs[i].tokenAddress,
-                    decimalsDelta: int8(_tokenConfigs[i].expectedDecimals - tokenDecimals)
-                })
-            );
-        }
-    }
-
-    function editAvailableToken(
-        uint256 _index,
-        AvailableToken memory _availableToken
-    ) external onlyOwner {
-        availableTokens[_index] = _availableToken;
-        emit TokenEdited(_index, _availableToken);
-    }
-
-    /**
-     * @notice Sends a message from the source chain to a destination chain.
-     * @param _recepient The address to receive the assets.
-     * @param _assets The assets to be sent.
-     * @param _options Additional options for message execution.
-     * @dev Encodes the message as bytes and sends it using the `_lzSend` internal function.
-     * @return receipt A `MessagingReceipt` struct containing details of the message sent.
-     */
-    function send(
-        address _recepient,
-        AssetEntry[] calldata _assets,
+    function linkTokenToHub(
+        TokenSetupConfig[] calldata _tokensConfig,
         bytes calldata _options
-    ) external payable returns (MessagingReceipt memory receipt) {
-        Asset[] memory assets = _checkAndTransform(_assets);
-        bytes memory payload = abi.encode(_recepient, assets);
-        _transferBatch(assets);
-        receipt = _lzSend(
+    ) external payable onlyOwner {
+        AvailableToken[] memory newTokens = _setupConfigToAvailableToken(_tokensConfig);
+        for (uint256 i = 0; i < newTokens.length; i++) {
+            availableTokens.push(newTokens[i]);
+            _tokenIndexPlusOne[newTokens[i].tokenAddress] = availableTokens.length;
+        }
+        bytes memory msgData = abi.encode(newTokens);
+        bytes memory payload = abi.encode(MessageType.LinkToken, msgData);
+        MessagingReceipt memory receipt = _lzSend(
             DST_EID,
             payload,
             _options,
             MessagingFee(msg.value, 0),
             payable(msg.sender)
         );
-        emit MessageSent(receipt.guid, _recepient, assets);
+        emit AddNewTokens(receipt.guid, newTokens);
     }
 
-    /**
-     * @notice Quotes the gas needed to pay for the full omnichain transaction in native gas or ZRO token.
-     * @param _recepient The address to receive the assets.
-     * @param _assets The assets to be sent.
-     * @param _options Messa ge execution options (e.g., for sending gas to destination).
-     * @return nativeFee The fee in the native token.
-     */
-    function quote(
+    function deposit(
         address _recepient,
-        AssetEntry[] memory _assets,
+        Asset[] calldata _assets,
+        bytes calldata _options
+    ) external payable returns (MessagingReceipt memory) {
+        Asset[] memory assets = _checkAndTransform(_assets);
+        bytes memory msgData = abi.encode(msg.sender, _recepient, assets);
+        bytes memory payload = abi.encode(MessageType.Deposit, msgData);
+        return _sendCrossChainMessage(payload, _options, _recepient, assets);
+    }
+
+    function swap(
+        SwapParams memory _swapParams,
+        bytes calldata _options,
+        Asset[] calldata _assets
+    ) external payable returns (MessagingReceipt memory) {
+        Asset[] memory assets = _checkAndTransform(_assets);
+        _swapParams.from = msg.sender;
+        _swapParams.assets = assets;
+        bytes memory msgData = abi.encode(_swapParams);
+        bytes memory payload = abi.encode(MessageType.Swap, msgData);
+        return _sendCrossChainMessage(payload, _options, _swapParams.to, assets);
+    }
+
+    function quoteLinkTokenToHub(
+        TokenSetupConfig[] calldata _tokensConfigs,
+        bytes calldata _options
+    ) public view returns (uint256 nativeFee) {
+        AvailableToken[] memory newTokens = _setupConfigToAvailableToken(_tokensConfigs);
+        bytes memory msgData = abi.encode(newTokens);
+        bytes memory payload = abi.encode(MessageType.LinkToken, msgData);
+        nativeFee = (_quote(DST_EID, payload, _options, false)).nativeFee;
+    }
+
+    function quoteDeposit(
+        address _recepient,
+        Asset[] calldata _assets,
         bytes calldata _options
     ) public view returns (uint256 nativeFee) {
         Asset[] memory assets = _checkAndTransform(_assets);
-        bytes memory payload = abi.encode(_recepient, assets);
+        bytes memory msgData = abi.encode(_recepient, _recepient, assets);
+        bytes memory payload = abi.encode(MessageType.Deposit, msgData);
         nativeFee = (_quote(DST_EID, payload, _options, false)).nativeFee;
+    }
+
+    function quoteSwap(
+        SwapParams memory _swapParams,
+        bytes calldata _options,
+        Asset[] calldata _assets
+    ) public view returns (uint256 nativeFee) {
+        _swapParams.assets = _checkAndTransform(_assets);
+        bytes memory msgData = abi.encode(_swapParams);
+        bytes memory payload = abi.encode(MessageType.Swap, msgData);
+        nativeFee = (_quote(DST_EID, payload, _options, false)).nativeFee;
+    }
+
+    function _setupConfigToAvailableToken(
+        TokenSetupConfig[] calldata _tokensConfig
+    ) internal view returns (AvailableToken[] memory _availableTokens) {
+        _availableTokens = new AvailableToken[](_tokensConfig.length);
+
+        for (uint256 i = 0; i < _tokensConfig.length; i++) {
+            uint8 tokenDecimals = IERC20Metadata(_tokensConfig[i].tokenAddress).decimals();
+            AvailableToken memory _availableToken = AvailableToken({
+                onPause: _tokensConfig[i].onPause,
+                tokenAddress: _tokensConfig[i].tokenAddress,
+                syntheticTokenAddress: _tokensConfig[i].syntheticTokenAddress,
+                decimalsDelta: int8(_tokensConfig[i].syntheticTokenDecimals - tokenDecimals)
+            });
+            _availableTokens[i] = _availableToken;
+        }
+    }
+
+    function _sendCrossChainMessage(
+        bytes memory _payload,
+        bytes memory _options,
+        address _recepient,
+        Asset[] memory _assets
+    ) internal returns (MessagingReceipt memory receipt) {
+        _transferBatch(_assets);
+        receipt = _lzSend(
+            DST_EID,
+            _payload,
+            _options,
+            MessagingFee(msg.value, 0),
+            payable(msg.sender)
+        );
+        emit MessageSent(MessageType.Swap, receipt.guid, msg.sender, _recepient, _assets);
     }
 
     /**
      * @dev Internal function override to handle incoming messages from another chain.
      * @dev _origin A struct containing information about the message sender.
      * @dev _guid A unique global packet identifier for the message.
-     * @param payload The encoded message payload being received.
+     * @param _payload The encoded message payload being received.
      *
      * @dev The following params are unused in the current implementation of the OApp.
      * @dev _executor The address of the Executor responsible for processing the message.
@@ -163,23 +251,54 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     function _lzReceive(
         Origin calldata _origin,
         bytes32 _guid,
-        bytes calldata payload,
+        bytes calldata _payload,
         address /*_executor*/,
         bytes calldata /*_extraData*/
     ) internal override {
-        // require(msg.sender == address(endpoint), "!endpoint");
-        //require(_origin.sender==, "!sender");
-        require(_origin.srcEid == DST_EID, "!DST_EID");
-        _processMessage(payload, _guid);
+        require(_origin.srcEid == DST_EID, "!DST_EID"); //paranoia
+        (MessageType messageType, bytes memory payload) = abi.decode(
+            _payload,
+            (MessageType, bytes)
+        );
+
+        if (messageType == MessageType.Withdraw || messageType == MessageType.Swap) {
+            _processMessage(messageType, payload, _guid, _origin.srcEid);
+        } else if (messageType == MessageType.RevertSwap) {
+            _processMessageRevertSwap(messageType, payload);
+        }
     }
 
-    function _processMessage(bytes memory _payload, bytes32 _guid) internal {
-        (address _recepient, Asset[] memory _assets) = abi.decode(_payload, (address, Asset[]));
+    function _processMessageRevertSwap(MessageType messageType, bytes memory _payload) internal {
+        (
+            address _from,
+            address _to,
+            Asset[] memory _assets,
+            bytes32 _guid,
+            string memory _reason
+        ) = abi.decode(_payload, (address, address, Asset[], bytes32, string));
         for (uint256 i = 0; i < _assets.length; i++) {
             Asset memory _asset = _assets[i];
-            _asset.tokenAddress.safeTransfer(_recepient, _asset.tokenAmount);
+            _asset.tokenAddress.safeTransfer(_to, _asset.tokenAmount);
         }
-        emit MessageReceived(_guid, _recepient, _assets);
+        emit ReceivedRevert(messageType, _guid, _from, _reason);
+    }
+
+    function _processMessage(
+        MessageType messageType,
+        bytes memory _payload,
+        bytes32 _guid,
+        uint32 _srcEid
+    ) internal {
+        (address _from, address _to, Asset[] memory _assets) = abi.decode(
+            _payload,
+            (address, address, Asset[])
+        );
+
+        for (uint256 i = 0; i < _assets.length; i++) {
+            Asset memory _asset = _assets[i];
+            _asset.tokenAddress.safeTransfer(_to, _asset.tokenAmount);
+        }
+        emit MessageReceived(messageType, _srcEid, _guid, _from, _to, _assets);
     }
 
     function _transferBatch(Asset[] memory _assets) internal {
@@ -197,23 +316,35 @@ contract GatewayVault is OApp, OAppOptionsType3 {
         return _amount;
     }
 
+    function _getAllAvailableTokenByIndex(
+        uint256 _index
+    ) private view returns (TokenDetail memory) {
+        address tokenAddress = availableTokens[_index].tokenAddress;
+        return
+            TokenDetail({
+                onPause: availableTokens[_index].onPause,
+                decimalsDelta: availableTokens[_index].decimalsDelta,
+                syntheticTokenAddress: availableTokens[_index].syntheticTokenAddress,
+                tokenAddress: tokenAddress,
+                tokenDecimals: IERC20Metadata(tokenAddress).decimals(),
+                tokenSymbol: IERC20Metadata(tokenAddress).symbol(),
+                tokenBalance: IERC20(tokenAddress).balanceOf(address(this))
+            });
+    }
+
     function _checkAndTransform(
-        AssetEntry[] memory _assets
+        Asset[] calldata _assets
     ) internal view returns (Asset[] memory assets) {
         assets = new Asset[](_assets.length);
 
         for (uint256 i = 0; i < _assets.length; i++) {
-            AssetEntry memory _assetEntry = _assets[i];
-            require(_assetEntry.tokenIndex < availableTokens.length, "Token index out of bounds");
-            AvailableToken memory _availableToken = availableTokens[_assetEntry.tokenIndex];
+            Asset calldata _assetEntry = _assets[i];
+            uint256 _index = getTokenIndex(_assetEntry.tokenAddress);
+            AvailableToken memory _availableToken = availableTokens[_index];
             require(!_availableToken.onPause, "Token is paused");
-
             uint256 _amount = _removeDust(_assetEntry.tokenAmount, _availableToken.decimalsDelta);
-            Asset memory _asset = Asset({
-                tokenAddress: _availableToken.tokenAddress,
-                tokenAmount: _amount
-            });
-            assets[i] = _asset;
+            require(_amount > 0, "Amount is too small");
+            assets[i] = Asset({ tokenAddress: _availableToken.tokenAddress, tokenAmount: _amount });
         }
     }
 }

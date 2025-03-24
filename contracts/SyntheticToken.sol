@@ -12,6 +12,7 @@ import { ISyntheticToken } from "./interfaces/ISyntheticToken.sol";
  */
 contract SyntheticToken is ERC20, Ownable, ISyntheticToken {
     uint8 private _decimals;
+    uint256 public tokenIndex;
 
     /**
      * @param _name Token name
@@ -21,9 +22,11 @@ contract SyntheticToken is ERC20, Ownable, ISyntheticToken {
     constructor(
         string memory _name,
         string memory _symbol,
-        uint8 _tokenDecimals
+        uint8 _tokenDecimals,
+        uint256 _tokenIndex
     ) ERC20(_name, _symbol) Ownable(msg.sender) {
         _decimals = _tokenDecimals;
+        tokenIndex = _tokenIndex;
     }
 
     /**
@@ -32,14 +35,6 @@ contract SyntheticToken is ERC20, Ownable, ISyntheticToken {
      */
     function decimals() public view override returns (uint8) {
         return _decimals;
-    }
-
-    /**
-     * @notice Check if the token is synthetic
-     * @return true, always returns true
-     */
-    function isSyntheticToken() external pure override returns (bool) {
-        return true;
     }
 
     /**

@@ -11,6 +11,13 @@ import { EndpointId } from "@layerzerolabs/lz-definitions";
 
 const config: HardhatUserConfig = {
   defaultNetwork: "hardhat",
+  contractSizer: {
+    alphaSort: true,
+    disambiguatePaths: false,
+    runOnCompile: true,
+    strict: true,
+    only: ["GatewayVault", "SyntheticTokenHub"],
+  },
   paths: {
     sources: "./contracts",
     tests: "./test",
@@ -22,11 +29,11 @@ const config: HardhatUserConfig = {
       {
         version: "0.8.23",
         settings: {
-          viaIR: false,
+          viaIR: true,
           evmVersion: "paris",
           optimizer: {
             enabled: true,
-            runs: 999,
+            runs: 200,
           },
         },
       },
@@ -34,6 +41,11 @@ const config: HardhatUserConfig = {
   },
   networks: {
     hardhat: {
+      chainId: 1,
+      forking: {
+        url: process.env.RPC_URL ?? "",
+        blockNumber: 17329500,
+      },
       allowBlocksWithSameTimestamp: true,
       allowUnlimitedContractSize: true,
       blockGasLimit: 40000000,
@@ -85,9 +97,18 @@ const config: HardhatUserConfig = {
       gasMultiplier: 1.2,
       gasPrice: "auto",
     },
+    base: {
+      eid: EndpointId.BASE_V2_MAINNET,
+      url: "https://mainnet.base.org",
+      chainId: 8453,
+      gas: "auto",
+      gasMultiplier: 1.2,
+      gasPrice: "auto",
+      accounts: [`${process.env.PRIVATE_KEY}`],
+    },
   },
   mocha: {
-    timeout: 100000,
+    timeout: 1000000,
   },
   // etherscan: {
   //   apiKey: {

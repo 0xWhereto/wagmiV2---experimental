@@ -1,29 +1,83 @@
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
 import { expect } from "chai";
-import { Contract, ContractFactory } from "ethers";
+import { BigNumber, BigNumberish, Contract, ContractFactory } from "ethers";
 import { deployments, ethers } from "hardhat";
+import {
+  time,
+  mine,
+  mineUpTo,
+  takeSnapshot,
+  SnapshotRestorer,
+  impersonateAccount,
+} from "@nomicfoundation/hardhat-network-helpers";
 
 import { Options } from "@layerzerolabs/lz-v2-utilities";
 import {
   GatewayVault,
   SyntheticTokenHub,
   SyntheticTokenHub__factory,
+  PoolCreator,
+  SwapQuoterV3,
   GatewayVault__factory,
   SyntheticToken,
+  MockERC20__factory,
+  MockERC20,
 } from "../typechain-types";
 
+import {
+  Trade as V3Trade,
+  Route as V3Route,
+  Pool as V3Pool,
+  Position,
+  FeeOptions,
+  encodeSqrtRatioX96,
+  nearestUsableTick,
+  TickMath,
+  FeeAmount,
+  SwapRouter,
+  NonfungiblePositionManager,
+} from "@uniswap/v3-sdk";
+import { TradeType } from "@uniswap/sdk-core";
+import { MixedRouteTrade, MixedRouteSDK, Trade as RouterTrade } from "@uniswap/router-sdk";
+import { CommandType, RoutePlanner } from "./testHelper/planner";
+import { encodePath, getMultiHopQuote, priceToTick, addV3ExactInTrades } from "./testHelper/helpers";
+
 describe("Synthetic Token System", function () {
+  enum MessageType {
+    Deposit,
+    Withdraw,
+    Swap,
+    LinkToken,
+    RevertSwap,
+  }
+
   // Constants
   const eidA = 1; // Chain A (Hub chain)
   const eidB = 2; // Chain B (Gateway chain)
   const eidC = 3; // Chain C (Additional Gateway chain)
   const LZ_GAS_LIMIT = 500000; // Gas limit for LayerZero cross-chain messages
+  const UniversalRouter = "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD";
+  const Permit2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+  const UniswapV3Factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
+  const NonfungiblePositionManager = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
+  const POOL_INIT_CODE_HASH = "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54";
 
   // Contract factories
   let SyntheticTokenHubFactory: SyntheticTokenHub__factory;
   let GatewayVaultFactory: GatewayVault__factory;
-  let MockERC20Factory: ContractFactory;
+  let MockERC20Factory: MockERC20__factory;
   let EndpointV2MockFactory: ContractFactory;
+  let poolCreator: PoolCreator;
+  let swapQuoterV3: SwapQuoterV3;
+  let bUSDT: MockERC20;
+  let bWETH: MockERC20;
+  let bWBTC: MockERC20;
+
+  let cUSDT: MockERC20;
+  let cWETH: MockERC20;
+  let cWBTC: MockERC20;
+
+  let planner: RoutePlanner;
 
   // Accounts
   let deployer: SignerWithAddress;
@@ -33,24 +87,47 @@ describe("Synthetic Token System", function () {
   let endpointOwner: SignerWithAddress;
   // Contracts
   let syntheticTokenHub: SyntheticTokenHub;
-  let gatewayVault: GatewayVault;
+  let gatewayVaultB: GatewayVault;
   let gatewayVaultC: GatewayVault; // Additional gateway for multi-chain testing
   let mockEndpointV2A: Contract;
   let mockEndpointV2B: Contract;
   let mockEndpointV2C: Contract;
-  let realToken: Contract;
-  let realTokenDiffDecimals: Contract;
-  let syntheticToken: SyntheticToken;
+
+  let syntheticUsdtToken: SyntheticToken;
+  let syntheticWethToken: SyntheticToken;
+  let syntheticBtcToken: SyntheticToken;
 
   before(async function () {
     // Get signers
     const signers = await ethers.getSigners();
     [deployer, user1, user2, user3, endpointOwner] = signers;
+    MockERC20Factory = await ethers.getContractFactory("MockERC20");
+    bUSDT = await MockERC20Factory.deploy("USDT", "USDT", 6);
+    bWETH = await MockERC20Factory.deploy("WETH", "WETH", 18);
+    bWBTC = await MockERC20Factory.deploy("WBTC", "WBTC", 8);
+    cUSDT = await MockERC20Factory.deploy("USDT", "USDT", 6);
+    cWETH = await MockERC20Factory.deploy("WETH", "WETH", 18);
+    cWBTC = await MockERC20Factory.deploy("WBTC", "WBTC", 8);
+    const amountUSDT = ethers.utils.parseUnits("10000000", 6);
+    const amountWETH = ethers.utils.parseUnits("10000", 18);
+    const amountWBTC = ethers.utils.parseUnits("100", 8);
+    for (const user of [user1, user2, user3]) {
+      await bUSDT.mint(user.address, amountUSDT);
+      await bWETH.mint(user.address, amountWETH);
+      await bWBTC.mint(user.address, amountWBTC);
+      await cUSDT.mint(user.address, amountUSDT);
+      await cWETH.mint(user.address, amountWETH);
+      await cWBTC.mint(user.address, amountWBTC);
+    }
+
+    const PoolCreatorFactory = await ethers.getContractFactory("PoolCreator");
+    poolCreator = await PoolCreatorFactory.deploy(UniswapV3Factory, NonfungiblePositionManager);
+    const SwapQuoterV3Factory = await ethers.getContractFactory("SwapQuoterV3");
+    swapQuoterV3 = await SwapQuoterV3Factory.deploy(UniswapV3Factory, POOL_INIT_CODE_HASH);
 
     // Get contract factories
     SyntheticTokenHubFactory = await ethers.getContractFactory("SyntheticTokenHub");
     GatewayVaultFactory = await ethers.getContractFactory("GatewayVault");
-    MockERC20Factory = await ethers.getContractFactory("MockERC20");
 
     // Get EndpointV2Mock artifact
     const EndpointV2MockArtifact = await deployments.getArtifact("EndpointV2Mock");
@@ -59,33 +136,31 @@ describe("Synthetic Token System", function () {
       EndpointV2MockArtifact.bytecode,
       endpointOwner
     );
-  });
-
-  beforeEach(async function () {
     // Deploy mock endpoint instances
     mockEndpointV2A = await EndpointV2MockFactory.deploy(eidA);
     mockEndpointV2B = await EndpointV2MockFactory.deploy(eidB);
     mockEndpointV2C = await EndpointV2MockFactory.deploy(eidC);
 
     // Create main contracts
-    syntheticTokenHub = await SyntheticTokenHubFactory.deploy(mockEndpointV2A.address, deployer.address);
-    gatewayVault = await GatewayVaultFactory.deploy(mockEndpointV2B.address, deployer.address, eidA);
+    syntheticTokenHub = await SyntheticTokenHubFactory.deploy(
+      mockEndpointV2A.address,
+      deployer.address,
+      UniversalRouter,
+      Permit2
+    );
+    gatewayVaultB = await GatewayVaultFactory.deploy(mockEndpointV2B.address, deployer.address, eidA);
     gatewayVaultC = await GatewayVaultFactory.deploy(mockEndpointV2C.address, deployer.address, eidA);
 
     // Configure endpoints
-    await mockEndpointV2A.setDestLzEndpoint(gatewayVault.address, mockEndpointV2B.address);
+    await mockEndpointV2A.setDestLzEndpoint(gatewayVaultB.address, mockEndpointV2B.address);
     await mockEndpointV2B.setDestLzEndpoint(syntheticTokenHub.address, mockEndpointV2A.address);
     await mockEndpointV2A.setDestLzEndpoint(gatewayVaultC.address, mockEndpointV2C.address);
     await mockEndpointV2C.setDestLzEndpoint(syntheticTokenHub.address, mockEndpointV2A.address);
 
-    // Configure connection between contracts
-    await syntheticTokenHub.addSupportedChain(eidB, gatewayVault.address);
-    await syntheticTokenHub.addSupportedChain(eidC, gatewayVaultC.address);
-
     // Set trusted peers between contracts (OApp -> OApp)
     // Get address bytes32 for each contract
     const synthTokenHubAddressBytes32 = ethers.utils.zeroPad(syntheticTokenHub.address, 32);
-    const gatewayVaultAddressBytes32 = ethers.utils.zeroPad(gatewayVault.address, 32);
+    const gatewayVaultAddressBytes32 = ethers.utils.zeroPad(gatewayVaultB.address, 32);
     const gatewayVaultCAddressBytes32 = ethers.utils.zeroPad(gatewayVaultC.address, 32);
 
     // Set SyntheticTokenHub trusted peers
@@ -93,492 +168,683 @@ describe("Synthetic Token System", function () {
     await syntheticTokenHub.setPeer(eidC, gatewayVaultCAddressBytes32);
 
     // Set GatewayVault trusted peers
-    await gatewayVault.setPeer(eidA, synthTokenHubAddressBytes32);
+    await gatewayVaultB.setPeer(eidA, synthTokenHubAddressBytes32);
     await gatewayVaultC.setPeer(eidA, synthTokenHubAddressBytes32);
-
-    // Initialize tokens
-    realToken = await MockERC20Factory.deploy("Real Token", "REAL", 18);
-    realTokenDiffDecimals = await MockERC20Factory.deploy("USDC Token", "USDC", 6);
-
-    // Add tokens to GatewayVault
-    await gatewayVault.addAvailableTokens([{ tokenAddress: realToken.address, expectedDecimals: 18 }]);
-    await gatewayVaultC.addAvailableTokens([{ tokenAddress: realTokenDiffDecimals.address, expectedDecimals: 18 }]);
   });
 
-  // Helper function to setup a test with tokens
-  async function setupWithToken() {
-    // Add synthetic token
-    const tx = await syntheticTokenHub.addSyntheticToken("TEST", 18);
-    const receipt = await tx.wait();
-
-    // Find SyntheticTokenAdded event
-    const event = receipt.logs.find((log: any) => {
-      try {
-        const parsed = syntheticTokenHub.interface.parseLog(log);
-        return parsed && parsed.name === "SyntheticTokenAdded";
-      } catch (e) {
-        return false;
-      }
+  describe("Token Creation and Management", function () {
+    it("should fail when non-owner tries to add a token", async function () {
+      await expect(syntheticTokenHub.connect(user1).createSyntheticToken("FAIL", 18)).to.be.reverted;
     });
 
-    const parsedEvent = event ? syntheticTokenHub.interface.parseLog(event) : null;
-    const tokenAddress = parsedEvent ? parsedEvent.args.tokenAddress : null;
-
-    // Create token instance
-    syntheticToken = await ethers.getContractAt("SyntheticToken", tokenAddress);
-
-    await realToken.mint(user1.address, ethers.utils.parseEther("1000"));
-    await realTokenDiffDecimals.mint(user3.address, ethers.utils.parseUnits("1000", 6));
-
-    // Link tokens
-    await syntheticTokenHub.linkRemoteToken(0, eidB, realToken.address, 0);
-    await syntheticTokenHub.linkRemoteToken(0, eidC, realTokenDiffDecimals.address, 12); // 6 decimals to 18
-
-    // Add token support in GatewayVault
-    await gatewayVault.addAvailableTokens([
-      {
-        tokenAddress: realToken.address,
-        expectedDecimals: 18,
-      },
-    ]);
-    await gatewayVaultC.addAvailableTokens([
-      {
-        tokenAddress: realTokenDiffDecimals.address,
-        expectedDecimals: 18,
-      },
-    ]);
-
-    // Approve tokens for spending
-    await realToken.connect(user1).approve(gatewayVault.address, ethers.constants.MaxUint256);
-    await realTokenDiffDecimals.connect(user3).approve(gatewayVaultC.address, ethers.constants.MaxUint256);
-  }
-
-  describe("Token Creation and Management", function () {
     it("should successfully create a synthetic token", async function () {
-      // Add token
-      const tokenSymbol = "BTC";
-      const tokenDecimals = 8;
+      const SyntheticTokens = [
+        { symbol: "USDT", decimals: 6 },
+        { symbol: "WETH", decimals: 18 },
+        { symbol: "WBTC", decimals: 8 },
+      ];
 
-      const tx = await syntheticTokenHub.addSyntheticToken(tokenSymbol, tokenDecimals);
-      const receipt = await tx.wait();
+      let SyntheticTokenAddress = [];
+      let index = 0;
 
-      // Find event
-      const event = receipt.logs.find((log: any) => {
-        try {
-          const parsed = syntheticTokenHub.interface.parseLog(log);
-          return parsed && parsed.name === "SyntheticTokenAdded";
-        } catch (e) {
-          return false;
-        }
-      });
+      for (const token of SyntheticTokens) {
+        // Add token
+        const tokenSymbol = token.symbol;
+        const tokenDecimals = token.decimals;
 
-      const parsedEvent = event ? syntheticTokenHub.interface.parseLog(event) : null;
-      const tokenAddress = parsedEvent ? parsedEvent.args.tokenAddress : null;
+        // Add synthetic token
+        const tx = await syntheticTokenHub.createSyntheticToken(tokenSymbol, tokenDecimals);
+        const receipt = await tx.wait();
+
+        // Find SyntheticTokenAdded event
+        const event = receipt.logs.find((log: any) => {
+          try {
+            const parsed = syntheticTokenHub.interface.parseLog(log);
+            return parsed && parsed.name === "SyntheticTokenAdded";
+          } catch (e) {
+            return false;
+          }
+        });
+
+        const parsedEvent = event ? syntheticTokenHub.interface.parseLog(event) : null;
+        const tokenAddress = parsedEvent ? parsedEvent.args.tokenAddress : null;
+        SyntheticTokenAddress.push(tokenAddress);
+        index++;
+        // Check token properties
+        const syntheticToken = await ethers.getContractAt("SyntheticToken", tokenAddress);
+        expect(await syntheticToken.tokenIndex()).to.equal(index);
+        expect(await syntheticToken.symbol()).to.equal(tokenSymbol);
+        expect(await syntheticToken.decimals()).to.equal(tokenDecimals);
+        expect(await syntheticToken.name()).to.equal(`Synthetic ${tokenSymbol}`);
+        expect(await syntheticToken.owner()).to.equal(syntheticTokenHub.address);
+        expect(await syntheticToken.totalSupply()).to.equal(0);
+        expect(await syntheticTokenHub.syntheticTokenCount()).to.equal(index);
+        expect(await syntheticTokenHub.getSyntheticTokenIndex(syntheticToken.address)).to.equal(index);
+      }
+      // Create token instance
+      syntheticUsdtToken = await ethers.getContractAt("SyntheticToken", SyntheticTokenAddress[0]);
+      syntheticWethToken = await ethers.getContractAt("SyntheticToken", SyntheticTokenAddress[1]);
+      syntheticBtcToken = await ethers.getContractAt("SyntheticToken", SyntheticTokenAddress[2]);
 
       // Check token was added correctly
-      expect(await syntheticTokenHub.syntheticTokenCount()).to.equal(1);
-
-      // Check token properties
-      const syntheticToken = await ethers.getContractAt("SyntheticToken", tokenAddress);
-      expect(await syntheticToken.symbol()).to.equal(tokenSymbol);
-      expect(await syntheticToken.decimals()).to.equal(tokenDecimals);
-      expect(await syntheticToken.name()).to.equal(`Synthetic ${tokenSymbol}`);
-      expect(await syntheticToken.owner()).to.equal(syntheticTokenHub.address);
     });
 
-    it("should successfully link token with remote token", async function () {
-      // Add token
-      await syntheticTokenHub.addSyntheticToken("ETH", 18);
-
-      // Add mock token in another network
-      const mockEthAddress = "0x1111111111111111111111111111111111111111";
-      const decimalsDelta = 0; // Same number of decimal places
-
-      await syntheticTokenHub.linkRemoteToken(0, eidB, mockEthAddress, decimalsDelta);
-
-      // Check token information
-      const [tokenView, remoteTokens] = await syntheticTokenHub.getSyntheticTokenInfo(0);
-      expect(remoteTokens.length).to.equal(1);
-      expect(remoteTokens[0].eid).to.equal(eidB);
-      expect(remoteTokens[0].remoteAddress).to.equal(mockEthAddress);
-      expect(remoteTokens[0].decimalsDelta).to.equal(decimalsDelta);
-
-      // Check network support
-      expect(tokenView.supportedChains.length).to.equal(1);
-      expect(tokenView.supportedChains[0]).to.equal(eidB);
+    it("should not allow non-owner to mint tokens", async function () {
+      await expect(syntheticUsdtToken.connect(user1).mint(user1.address, ethers.utils.parseUnits("100", 6))).to.be
+        .reverted;
     });
 
-    it("should correctly manage pause status", async function () {
-      // Add token
-      await syntheticTokenHub.addSyntheticToken("USDC", 6);
-
-      // Link with remote token
-      const mockUsdcAddress = "0x2222222222222222222222222222222222222222";
-      await syntheticTokenHub.linkRemoteToken(0, eidB, mockUsdcAddress, -12); // Remote has 18 decimal places
-
-      // Pause synthetic token
-      await syntheticTokenHub.pauseSyntheticToken(0, true);
-      const [tokenView, _] = await syntheticTokenHub.getSyntheticTokenInfo(0);
-      expect(tokenView.isPaused).to.equal(true);
-
-      // Pause remote token
-      await syntheticTokenHub.pauseRemoteToken(0, eidB, true);
-      const [__, remoteTokens] = await syntheticTokenHub.getSyntheticTokenInfo(0);
-      expect(remoteTokens[0].isPaused).to.equal(true);
-
-      // Unpause both
-      await syntheticTokenHub.pauseSyntheticToken(0, false);
-      await syntheticTokenHub.pauseRemoteToken(0, eidB, false);
-
-      const [updatedToken, updatedRemotes] = await syntheticTokenHub.getSyntheticTokenInfo(0);
-      expect(updatedToken.isPaused).to.equal(false);
-      expect(updatedRemotes[0].isPaused).to.equal(false);
+    it("should not allow non-owner to burn tokens", async function () {
+      await expect(syntheticUsdtToken.connect(user1).burn(user1.address, ethers.utils.parseUnits("100", 6))).to.be
+        .reverted;
     });
 
-    it("should fail when non-owner tries to add a token", async function () {
-      await expect(syntheticTokenHub.connect(user1).addSyntheticToken("FAIL", 18)).to.be.reverted;
-    });
-
-    it("should fail when non-owner tries to link remote token", async function () {
-      // First add a token as owner
-      await syntheticTokenHub.addSyntheticToken("TEST", 18);
-
-      // Try linking as non-owner
+    it("should fail when non-owner tries to link token", async function () {
       await expect(
-        syntheticTokenHub.connect(user1).linkRemoteToken(0, eidB, "0x1111111111111111111111111111111111111111", 0)
-      ).to.be.reverted;
+        gatewayVaultB.connect(user1).linkTokenToHub(
+          [
+            {
+              onPause: false,
+              tokenAddress: bUSDT.address,
+              syntheticTokenDecimals: 6,
+              syntheticTokenAddress: syntheticUsdtToken.address,
+            },
+          ],
+          "0x"
+        )
+      ).to.be.revertedWithCustomError(gatewayVaultB, "OwnableUnauthorizedAccount");
     });
 
-    it("should fail when trying to link to non-existent token", async function () {
-      await expect(syntheticTokenHub.linkRemoteToken(100, eidB, "0x1111111111111111111111111111111111111111", 0)).to.be
-        .reverted;
+    it("should successfully link token to synthetic token", async function () {
+      // Add mock token in another network
+
+      const tokenSetupConfig: GatewayVault.TokenSetupConfigStruct[] = [
+        {
+          onPause: false,
+          tokenAddress: bUSDT.address,
+          syntheticTokenDecimals: 6,
+          syntheticTokenAddress: syntheticUsdtToken.address,
+        },
+        {
+          onPause: false,
+          tokenAddress: bWBTC.address,
+          syntheticTokenDecimals: 8,
+          syntheticTokenAddress: syntheticBtcToken.address,
+        },
+        {
+          onPause: false,
+          tokenAddress: bWETH.address,
+          syntheticTokenDecimals: 18,
+          syntheticTokenAddress: syntheticWethToken.address,
+        },
+      ];
+
+      // Link the token using the proper method
+      const options = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      // (bool,address,uint8,address)[],bytes
+      const fee = await gatewayVaultB.quoteLinkTokenToHub(tokenSetupConfig, options);
+
+      // Send the link transaction
+      await gatewayVaultB.linkTokenToHub(tokenSetupConfig, options, { value: fee });
+
+      // Check token information via remoteTokens mapping
+      // usdt
+      const remoteTokenInfo = await syntheticTokenHub.remoteTokens(syntheticUsdtToken.address, eidB);
+      expect(remoteTokenInfo.remoteAddress).to.equal(bUSDT.address);
+      expect(remoteTokenInfo.decimalsDelta).to.equal(0); // Same number of decimal places
+
+      // wbtc
+      const remoteTokenInfoBtc = await syntheticTokenHub.remoteTokens(syntheticBtcToken.address, eidB);
+      expect(remoteTokenInfoBtc.remoteAddress).to.equal(bWBTC.address);
+      expect(remoteTokenInfoBtc.decimalsDelta).to.equal(0); // Same number of decimal places
+
+      // weth
+      const remoteTokenInfoWeth = await syntheticTokenHub.remoteTokens(syntheticWethToken.address, eidB);
+      expect(remoteTokenInfoWeth.remoteAddress).to.equal(bWETH.address);
+      expect(remoteTokenInfoWeth.decimalsDelta).to.equal(0); // Same number of decimal places
+
+      // Check token was added correctly
+      const newTokenCount = await gatewayVaultB.getAvailableTokenLength();
+      expect(newTokenCount).to.equal(3);
+
+      const syntheticTokensInfo = await syntheticTokenHub.getSyntheticTokensInfo([]);
+      // console.dir(syntheticTokensInfo, { depth: null });
+      expect(syntheticTokensInfo.length).to.equal(3);
+      expect(syntheticTokensInfo[0].syntheticTokenInfo.tokenAddress).to.equal(syntheticUsdtToken.address);
+      expect(syntheticTokensInfo[1].syntheticTokenInfo.tokenAddress).to.equal(syntheticWethToken.address);
+      expect(syntheticTokensInfo[2].syntheticTokenInfo.tokenAddress).to.equal(syntheticBtcToken.address);
+      expect(syntheticTokensInfo[0].remoteTokens[0].remoteTokenInfo.remoteAddress).to.equal(bUSDT.address);
+      expect(syntheticTokensInfo[1].remoteTokens[0].remoteTokenInfo.remoteAddress).to.equal(bWETH.address);
+      expect(syntheticTokensInfo[2].remoteTokens[0].remoteTokenInfo.remoteAddress).to.equal(bWBTC.address);
+
+      const tokenSetupConfigC: GatewayVault.TokenSetupConfigStruct[] = [
+        {
+          onPause: false,
+          tokenAddress: cUSDT.address,
+          syntheticTokenDecimals: 6,
+          syntheticTokenAddress: syntheticUsdtToken.address,
+        },
+        {
+          onPause: false,
+          tokenAddress: cWBTC.address,
+          syntheticTokenDecimals: 8,
+          syntheticTokenAddress: syntheticBtcToken.address,
+        },
+        {
+          onPause: false,
+          tokenAddress: cWETH.address,
+          syntheticTokenDecimals: 18,
+          syntheticTokenAddress: syntheticWethToken.address,
+        },
+      ];
+
+      const feeC = await gatewayVaultC.quoteLinkTokenToHub(tokenSetupConfigC, options);
+      // Send the link transaction
+      await gatewayVaultC.linkTokenToHub(tokenSetupConfigC, options, { value: feeC });
     });
 
-    it("should fail when trying to link to non-existent chain", async function () {
-      // Add token
-      await syntheticTokenHub.addSyntheticToken("TEST", 18);
+    it("should find synthetic token index by address", async function () {
+      // Make sure the test runs after token is created
+      // Using the syntheticUsdtToken that was created in the initial setup
 
-      // Try linking to non-existent chain
-      await expect(syntheticTokenHub.linkRemoteToken(0, 999, "0x1111111111111111111111111111111111111111", 0)).to.be
-        .reverted;
+      const index = await syntheticTokenHub.getSyntheticTokenIndex(syntheticUsdtToken.address);
+      expect(index).to.be.equal(1);
+      // REVERT
+      await expect(
+        syntheticTokenHub.getSyntheticTokenIndex("0x0000000000000000000000000000000000000001")
+      ).to.be.revertedWith("Token not found");
     });
 
-    it("should find token by address", async function () {
-      // Убедитесь, что тест запускается после setupWithToken
-      await setupWithToken();
+    it("should find synthetic token address by remote address", async function () {
+      // Find token by its corresponding address on remote chain
+      // We need to use the _syntheticAddressByRemoteAddress mapping
 
-      // Теперь ищем по индексу 0, а не по несуществующему индексу
-      const index = await syntheticTokenHub.getTokenIndex(syntheticToken.address);
-      expect(index).to.equal(0);
+      const syntheticAddress = await syntheticTokenHub.syntheticAddressByRemoteAddress(
+        eidB,
+        bUSDT.address // This is mockEthAddress from previous test
+      );
+
+      expect(syntheticAddress).to.equal(syntheticUsdtToken.address);
     });
 
-    it("should find token by remote address", async function () {
-      // Убедитесь, что тест запускается после setupWithToken
-      await setupWithToken();
+    it("should properly handle token approvals to Universal Permit2", async function () {
+      // Check that the token was properly approved for the Universal Router
+      const approval = await syntheticUsdtToken.allowance(
+        syntheticTokenHub.address,
+        await syntheticTokenHub.uniswapPermitV2()
+      );
 
-      // Ищем по существующему адресу
-      const index = await syntheticTokenHub.getTokenIndexByRemote(eidB, realToken.address);
-      expect(index).to.equal(0);
-    });
-
-    it("should return chain index by EID", async function () {
-      // Check index for a known chain
-      const index = await syntheticTokenHub.getChainIndex(eidB);
-      expect(index).to.equal(0); // First added chain has index 0
-    });
-
-    it("should check if chain is supported", async function () {
-      // Check supported chain
-      expect(await syntheticTokenHub.isChainSupported(eidB)).to.equal(true);
-
-      // Check unsupported chain
-      expect(await syntheticTokenHub.isChainSupported(999)).to.equal(false);
+      expect(approval).to.equal(ethers.constants.MaxUint256);
     });
   });
 
   describe("Chain Management", function () {
-    it("should correctly add supported chains", async function () {
-      // Get supported chains
-      const chains = await syntheticTokenHub.getSupportedChains();
-      expect(chains.length).to.equal(2);
-      expect(chains[0].eid).to.equal(eidB);
-      expect(chains[1].eid).to.equal(eidC);
+    // In SyntheticTokenHub there's no explicit chain management functions
+    // Instead, we can check the peer mappings to validate chain connections
 
-      // Check chain status
-      expect(chains[0].isActive).to.equal(true);
+    it("should correctly set up trusted peers", async function () {
+      // Get the peer for eidB
+      const peerB = await syntheticTokenHub.peers(eidB);
+      const expectedPeerB = ethers.utils.hexlify(ethers.utils.zeroPad(gatewayVaultB.address, 32));
+
+      expect(peerB).to.equal(expectedPeerB);
+
+      // Get the peer for eidC
+      const peerC = await syntheticTokenHub.peers(eidC);
+      const expectedPeerC = ethers.utils.hexlify(ethers.utils.zeroPad(gatewayVaultC.address, 32));
+
+      expect(peerC).to.equal(expectedPeerC);
     });
 
-    it("should update chain status correctly", async function () {
-      // Update chain status
-      await syntheticTokenHub.updateChainStatus(eidB, false);
-
-      // Check updated status
-      const chains = await syntheticTokenHub.getSupportedChains();
-      expect(chains[0].isActive).to.equal(false);
-
-      // Restore status
-      await syntheticTokenHub.updateChainStatus(eidB, true);
-      const updatedChains = await syntheticTokenHub.getSupportedChains();
-      expect(updatedChains[0].isActive).to.equal(true);
-    });
-
-    it("should fail to update non-existent chain", async function () {
-      await expect(syntheticTokenHub.updateChainStatus(999, false)).to.be.reverted;
-    });
-
-    it("should fail when non-owner tries to add chain", async function () {
-      await expect(syntheticTokenHub.connect(user1).addSupportedChain(5, "0x1111111111111111111111111111111111111111"))
-        .to.be.reverted;
-    });
-
-    it("should fail when adding already supported chain", async function () {
-      await expect(syntheticTokenHub.addSupportedChain(eidB, "0x2222222222222222222222222222222222222222")).to.be
-        .reverted;
-    });
-  });
-
-  describe("Synthetic Token Verification", function () {
-    it("should have correct initial state", async function () {
-      await setupWithToken();
-
-      expect(await syntheticToken.name()).to.equal("Synthetic TEST");
-      expect(await syntheticToken.symbol()).to.equal("TEST");
-      expect(await syntheticToken.decimals()).to.equal(18);
-      expect(await syntheticToken.owner()).to.equal(syntheticTokenHub.address);
-      expect(await syntheticToken.totalSupply()).to.equal(0);
-    });
-
-    it("should correctly identify as a synthetic token", async function () {
-      await setupWithToken();
-
-      expect(await syntheticToken.isSyntheticToken()).to.equal(true);
-    });
-
-    it("should not allow non-owner to mint tokens", async function () {
-      await expect(syntheticToken.connect(user1).mint(user1.address, ethers.utils.parseEther("100"))).to.be.reverted;
-    });
-
-    it("should not allow non-owner to burn tokens", async function () {
-      await expect(syntheticToken.connect(user1).burn(user1.address, ethers.utils.parseEther("100"))).to.be.reverted;
+    it("should have proper gateway mapping", async function () {
+      // After linking tokens, the gatewayVaultByEid mapping should be updated
+      const gatewayB = await syntheticTokenHub.gatewayVaultByEid(eidB);
+      expect(gatewayB).to.equal(gatewayVaultB.address);
+      const gatewayC = await syntheticTokenHub.gatewayVaultByEid(eidC);
+      expect(gatewayC).to.equal(gatewayVaultC.address);
     });
   });
 
   describe("Cross-Chain Token Flow", function () {
-    beforeEach(async function () {
-      // Setup tokens for each cross-chain test
-      await setupWithToken();
-    });
-
-    it("should successfully lock tokens in gateway vault", async function () {
-      await setupWithToken();
-
+    let depositUsdtAmount: BigNumber = ethers.utils.parseUnits("10000000", 6);
+    let depositWethAmount: BigNumber = ethers.utils.parseUnits("10000", 18);
+    let depositBtcAmount: BigNumber = ethers.utils.parseUnits("100", 8);
+    it("should successfully deposit tokens in gateway vault and mint synthetic tokens", async function () {
       // Initial balances
-      const depositAmount = ethers.utils.parseEther("100");
-      expect(await realToken.balanceOf(gatewayVault.address)).to.equal(0);
+      let initialUSDTVaultBalance = await bUSDT.balanceOf(gatewayVaultB.address);
+      let initialWBTCVaultBalance = await bWBTC.balanceOf(gatewayVaultB.address);
+      let initialWETHVaultBalance = await bWETH.balanceOf(gatewayVaultB.address);
+
+      // Approve USDT for spending in vaults
+      await bUSDT.connect(user2).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
+      await bWBTC.connect(user2).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
+      await bWETH.connect(user2).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
+      await cUSDT.connect(user3).approve(gatewayVaultC.address, ethers.constants.MaxUint256);
+      await cWBTC.connect(user3).approve(gatewayVaultC.address, ethers.constants.MaxUint256);
+      await cWETH.connect(user3).approve(gatewayVaultC.address, ethers.constants.MaxUint256);
 
       // Prepare message sending
       const options = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const nativeFee = await gatewayVault.quote(
-        user2.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmount }],
-        options
-      );
+      const assets: GatewayVault.AssetStruct[] = [
+        { tokenAddress: bUSDT.address, tokenAmount: depositUsdtAmount },
+        { tokenAddress: bWETH.address, tokenAmount: depositWethAmount },
+        { tokenAddress: bWBTC.address, tokenAmount: depositBtcAmount },
+      ];
+      const nativeFee = await gatewayVaultB.quoteDeposit(user2.address, assets, options);
 
       // Send tokens from Chain B to Chain A
-      await gatewayVault
-        .connect(user1)
-        .send(user2.address, [{ tokenIndex: 0, tokenAmount: depositAmount }], options, { value: nativeFee });
+      await gatewayVaultB.connect(user2).deposit(user2.address, assets, options, { value: nativeFee });
 
       // Verify tokens are locked in Gateway on Chain B
-      expect(await realToken.balanceOf(gatewayVault.address)).to.equal(depositAmount);
-    });
+      const newUSDTVaultBalance = await bUSDT.balanceOf(gatewayVaultB.address);
+      expect(newUSDTVaultBalance.sub(initialUSDTVaultBalance)).to.equal(depositUsdtAmount);
+      const newWBTCVaultBalance = await bWBTC.balanceOf(gatewayVaultB.address);
+      expect(newWBTCVaultBalance.sub(initialWBTCVaultBalance)).to.equal(depositBtcAmount);
+      const newWETHVaultBalance = await bWETH.balanceOf(gatewayVaultB.address);
+      expect(newWETHVaultBalance.sub(initialWETHVaultBalance)).to.equal(depositWethAmount);
+      // check synthetic token balances
+      expect(await syntheticUsdtToken.balanceOf(user2.address)).to.equal(depositUsdtAmount);
+      expect(await syntheticBtcToken.balanceOf(user2.address)).to.equal(depositBtcAmount);
+      expect(await syntheticWethToken.balanceOf(user2.address)).to.equal(depositWethAmount);
 
-    it("should properly send tokens from gateway to hub and burn synthetic tokens and send them back", async function () {
-      // Define deposit amount
-      const depositAmount = ethers.utils.parseEther("100");
-      const initialBalance = await realToken.balanceOf(user1.address);
+      const assetsC: GatewayVault.AssetStruct[] = [
+        { tokenAddress: cUSDT.address, tokenAmount: depositUsdtAmount },
+        { tokenAddress: cWETH.address, tokenAmount: depositWethAmount },
+        { tokenAddress: cWBTC.address, tokenAmount: depositBtcAmount },
+      ];
 
-      // Calculate message fee
-      const options = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const nativeFee = await gatewayVault.quote(
-        user2.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmount }],
-        options
-      );
+      const nativeFeeC = await gatewayVaultC.quoteDeposit(user3.address, assetsC, options);
 
       // Send tokens from Chain B to Chain A
-      await gatewayVault
-        .connect(user1)
-        .send(user2.address, [{ tokenIndex: 0, tokenAmount: depositAmount }], options, { value: nativeFee });
+      await gatewayVaultC.connect(user3).deposit(user3.address, assetsC, options, { value: nativeFeeC });
 
-      // Verify tokens are transferred from user to vault
-      expect(await realToken.balanceOf(user1.address)).to.equal(initialBalance.sub(depositAmount));
-      expect(await realToken.balanceOf(gatewayVault.address)).to.equal(depositAmount);
-      expect(await syntheticToken.balanceOf(user2.address)).to.equal(depositAmount);
+      // Verify tokens are locked in Gateway on Chain C
+      const newUSDTVaultBalanceC = await cUSDT.balanceOf(gatewayVaultC.address);
+      expect(newUSDTVaultBalanceC.sub(initialUSDTVaultBalance)).to.equal(depositUsdtAmount);
+      const newWBTCVaultBalanceC = await cWBTC.balanceOf(gatewayVaultC.address);
+      expect(newWBTCVaultBalanceC.sub(initialWBTCVaultBalance)).to.equal(depositBtcAmount);
+      const newWETHVaultBalanceC = await cWETH.balanceOf(gatewayVaultC.address);
+      expect(newWETHVaultBalanceC.sub(initialWETHVaultBalance)).to.equal(depositWethAmount);
+      // check synthetic token balances
+      expect(await syntheticUsdtToken.balanceOf(user3.address)).to.equal(depositUsdtAmount);
+      expect(await syntheticBtcToken.balanceOf(user3.address)).to.equal(depositBtcAmount);
+      expect(await syntheticWethToken.balanceOf(user3.address)).to.equal(depositWethAmount);
+    });
 
-      // Calculate message fee for burning and withdrawal
+    it("shoulde successfully create synthetic pool on chain A", async function () {
+      // priceToTick(price0InUsd: number, price1InUsd: number, decimals0: number, decimals1: number)
+      // Create synthetic pool on chain A
+      await syntheticUsdtToken.connect(user2).approve(poolCreator.address, ethers.constants.MaxUint256);
+      await syntheticWethToken.connect(user2).approve(poolCreator.address, ethers.constants.MaxUint256);
+      await syntheticBtcToken.connect(user2).approve(poolCreator.address, ethers.constants.MaxUint256);
+      await syntheticUsdtToken.connect(user3).approve(poolCreator.address, ethers.constants.MaxUint256);
+      await syntheticWethToken.connect(user3).approve(poolCreator.address, ethers.constants.MaxUint256);
+      await syntheticBtcToken.connect(user3).approve(poolCreator.address, ethers.constants.MaxUint256);
+
+      const tick = await priceToTick(1, 2000, syntheticUsdtToken, syntheticWethToken);
+
+      const assetA = { token: syntheticUsdtToken.address, amount: depositUsdtAmount };
+      const assetB = { token: syntheticWethToken.address, amount: depositWethAmount };
+      await poolCreator.connect(user2).createPool(tick, assetA, assetB);
+
+      // WETH/BTC
+      const tickBtc = await priceToTick(1, 50, syntheticWethToken, syntheticBtcToken);
+      const assetC = { token: syntheticWethToken.address, amount: depositWethAmount };
+      const assetD = { token: syntheticBtcToken.address, amount: depositBtcAmount };
+      await poolCreator.connect(user3).createPool(tickBtc, assetC, assetD);
+    });
+
+    it("should properly burn synthetic tokens and send message to self address for withdrawal ", async function () {
+      const initialBalance = await cWBTC.balanceOf(user2.address);
+      // Calculate message fee for burning
       const optionsBurn = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const nativeFeeBurn = await syntheticTokenHub.quoteBurnAndSend(
-        user1.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmount }],
-        eidB,
+      let BtcAmount: BigNumber = ethers.utils.parseUnits("10", 8);
+
+      // For bridging back, we need to use the bridgeTokens function
+      const nativeFeeBurn = await syntheticTokenHub.quoteBridgeTokens(
+        user2.address,
+        [{ tokenAddress: syntheticBtcToken.address, tokenAmount: BtcAmount }],
+        eidC,
         optionsBurn
       );
 
       // Burn tokens and send message for withdrawal
       await syntheticTokenHub
         .connect(user2)
-        .burnAndSend(user1.address, [{ tokenIndex: 0, tokenAmount: depositAmount }], eidB, optionsBurn, {
-          value: nativeFeeBurn,
-        });
+        .bridgeTokens(
+          user2.address,
+          [{ tokenAddress: syntheticBtcToken.address, tokenAmount: BtcAmount }],
+          eidC,
+          optionsBurn,
+          { value: nativeFeeBurn }
+        );
 
-      // Verify tokens were burned
-      expect(await syntheticToken.balanceOf(user2.address)).to.equal(0);
-      expect(await syntheticToken.totalSupply()).to.equal(0);
-      expect(await realToken.balanceOf(user1.address)).to.equal(initialBalance);
+      // Verify tokens were burned and returned
+      expect(await syntheticBtcToken.balanceOf(user2.address)).to.equal(depositBtcAmount.sub(BtcAmount));
+      expect(await cWBTC.balanceOf(user2.address)).to.equal(initialBalance.add(BtcAmount));
     });
 
-    it("should perform full cross-chain token cycle with multi-chain bridging (B->A->C)", async function () {
-      // ----- PART 1: SENDING TOKENS FROM CHAIN B TO CHAIN A -----
+    it("should properly burn synthetic tokens and send message to other address for withdrawal", async function () {
+      const initialBalance = await bUSDT.balanceOf(user1.address);
+      // Calculate message fee for burning
+      const optionsBurn = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
 
-      // Initial token amount
-      const depositAmount = ethers.utils.parseEther("100");
-      const depositAmountDiffDecimals = ethers.utils.parseUnits("100", 6);
-
-      // Check initial balances
-      const initialBalanceB = await realToken.balanceOf(user1.address);
-      const initialBalanceC = await realTokenDiffDecimals.balanceOf(user3.address);
-      expect(await syntheticToken.balanceOf(user2.address)).to.equal(0);
-      expect(await realToken.balanceOf(gatewayVault.address)).to.equal(0);
-      expect(await realTokenDiffDecimals.balanceOf(gatewayVault.address)).to.equal(0);
-
-      // User1 sends tokens from Chain B to Chain A
-      const optionsSendB = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const nativeFeeSendB = await gatewayVault.quote(
-        user2.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmount }],
-        optionsSendB
+      // For bridging back, we need to use the bridgeTokens function
+      const nativeFeeBurn = await syntheticTokenHub.quoteBridgeTokens(
+        user1.address,
+        [{ tokenAddress: syntheticUsdtToken.address, tokenAmount: depositUsdtAmount }],
+        eidB,
+        optionsBurn
       );
 
-      await gatewayVault
-        .connect(user1)
-        .send(user2.address, [{ tokenIndex: 0, tokenAmount: depositAmount }], optionsSendB, { value: nativeFeeSendB });
-
-      // Verify tokens are locked in Chain B and synthetic tokens created on Chain A
-      expect(await realToken.balanceOf(user1.address)).to.equal(initialBalanceB.sub(depositAmount));
-      expect(await realToken.balanceOf(gatewayVault.address)).to.equal(depositAmount);
-      expect(await syntheticToken.balanceOf(user2.address)).to.equal(depositAmount);
-
-      // ----- PART 2: SENDING TOKENS FROM CHAIN C TO CHAIN A -----
-
-      // User3 sends tokens from Chain C to Chain A
-      const optionsSendC = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const nativeFeeSendC = await gatewayVaultC.quote(
-        user3.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmountDiffDecimals }],
-        optionsSendC
-      );
-
-      await gatewayVaultC
-        .connect(user3)
-        .send(user2.address, [{ tokenIndex: 0, tokenAmount: depositAmountDiffDecimals }], optionsSendC, {
-          value: nativeFeeSendC,
-        });
-
-      // Verify tokens are locked in Chain C and synthetic tokens created on Chain A
-      expect(await realTokenDiffDecimals.balanceOf(user3.address)).to.equal(
-        initialBalanceC.sub(depositAmountDiffDecimals)
-      );
-      expect(await syntheticToken.balanceOf(user2.address)).to.equal(depositAmount.add(depositAmount));
-      expect(await realTokenDiffDecimals.balanceOf(gatewayVaultC.address)).to.equal(depositAmountDiffDecimals);
-
-      // ----- PART 3: SENDING TOKENS FROM CHAIN A TO CHAIN C -----
-
-      const optionsSendA = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const nativeFeeSendA = await syntheticTokenHub.quoteBurnAndSend(
-        user3.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmount }],
-        eidC,
-        optionsSendA
-      );
-
-      // User2 burns synthetic tokens and sends to Chain C
+      // Burn tokens and send message for withdrawal
       await syntheticTokenHub
-        .connect(user2)
-        .burnAndSend(user3.address, [{ tokenIndex: 0, tokenAmount: depositAmount }], eidC, optionsSendC, {
-          value: nativeFeeSendA,
+        .connect(user3)
+        .bridgeTokens(
+          user1.address,
+          [{ tokenAddress: syntheticUsdtToken.address, tokenAmount: depositUsdtAmount }],
+          eidB,
+          optionsBurn,
+          { value: nativeFeeBurn }
+        );
+
+      // Verify tokens were burned and returned
+      expect(await bUSDT.balanceOf(user1.address)).to.equal(initialBalance.add(depositUsdtAmount));
+    });
+  });
+
+  describe("Cross-Chain Swap Tests", async function () {
+    // Test constants for swap
+    const usdtSwapAmount = ethers.utils.parseUnits("1000", 6);
+    const slippageTolerance = 50; // 0.5% slippage tolerance, in basis points (1 = 0.01%)
+
+    // Add this test for cross-chain swap using Uniswap pools
+    it("should perform cross-chain swap from Chain B (USDT) to Chain C (BTC) via Uniswap pools", async function () {
+      await bUSDT.connect(user1).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
+      const initialUserBtcBalance = await cWBTC.balanceOf(user1.address);
+      const quotedOutput = await getMultiHopQuote(
+        true,
+        swapQuoterV3,
+        [syntheticUsdtToken.address, syntheticWethToken.address, syntheticBtcToken.address],
+        usdtSwapAmount,
+        [FeeAmount.LOW, FeeAmount.LOW]
+      );
+      console.log(`Quoted output amount: ${ethers.utils.formatUnits(quotedOutput, 8)} BTC`);
+      const minOutputAmount = quotedOutput.mul(10000 - slippageTolerance).div(10000);
+
+      const gasLimitFromHub = 2000_000;
+      const gasLimitToHub = 2000_000;
+
+      const _assetsIn = [{ tokenAddress: bUSDT.address, tokenAmount: usdtSwapAmount }];
+
+      const quoteFromHub = await syntheticTokenHub.quoteSwap(
+        user1.address,
+        _assetsIn,
+        syntheticBtcToken.address,
+        eidB,
+        eidC,
+        Options.newOptions().addExecutorLzReceiveOption(gasLimitFromHub, 0).toHex().toString()
+      );
+
+      const swapOptions = Options.newOptions()
+        .addExecutorLzReceiveOption(gasLimitToHub, quoteFromHub.toString())
+        .toHex()
+        .toString();
+
+      const planner = new RoutePlanner();
+      addV3ExactInTrades(planner, usdtSwapAmount, minOutputAmount, syntheticTokenHub.address, [
+        [syntheticUsdtToken.address, syntheticWethToken.address, syntheticBtcToken.address],
+      ]);
+      const { commands, inputs } = planner;
+
+      const swapParams = {
+        from: user1.address,
+        to: user1.address, // Send the result to the same user on Chain C
+        syntheticTokenOut: syntheticBtcToken.address,
+        gasLimit: gasLimitToHub,
+        dstEid: eidC,
+        value: quoteFromHub,
+        assets: _assetsIn,
+        commands: commands,
+        inputs: inputs,
+      };
+
+      const nativeFee = await gatewayVaultB.quoteSwap(swapParams, swapOptions, [
+        { tokenAddress: bUSDT.address, tokenAmount: usdtSwapAmount },
+      ]);
+
+      const tx = await gatewayVaultB
+        .connect(user1)
+        .swap(swapParams, swapOptions, [{ tokenAddress: bUSDT.address, tokenAmount: usdtSwapAmount }], {
+          value: nativeFee,
         });
+      await tx.wait();
 
-      // Verify synthetic tokens were burned on Chain A
-      expect(await syntheticToken.balanceOf(user2.address)).to.equal(depositAmount);
+      // const events = await gatewayVaultC.queryFilter(gatewayVaultC.filters.MessageReceived());
+      // console.log("events", events);
+      // expect(events.length).to.be.greaterThan(0);
 
-      // Verify user3 received real tokens on Chain C (with correct decimals adjustment)
-      // Note: realTokenDiffDecimals has 6 decimals, so 100e18 synthetic tokens should be 100e6 real tokens
+      // Verify the outcome - user1 should receive BTC on Chain C
+      const finalUserBtcBalance = await cWBTC.balanceOf(user1.address);
+      const btcReceived = finalUserBtcBalance.sub(initialUserBtcBalance);
 
-      expect(await realTokenDiffDecimals.balanceOf(user3.address)).to.equal(initialBalanceC);
+      console.log(`BTC received on Chain C: ${ethers.utils.formatUnits(btcReceived, 8)}`);
 
-      // Chain B real tokens remain locked in the vault (they're still backing the tokens in Chain C)
-      expect(await realTokenDiffDecimals.balanceOf(gatewayVaultC.address)).to.equal(0);
+      // Assert that the received amount meets our expectations
+      expect(btcReceived).to.be.gte(minOutputAmount);
+    });
+
+    it("should handle swap failure and revert mechanisms properly", async function () {
+      // 1. Setup - Use an invalid path to force swap failure
+      const gasLimitFromHub = 3000_000;
+      const gasLimitToHub = 2000_000;
+
+      await bUSDT.connect(user1).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
+
+      // Replace manual command creation with RoutePlanner
+      const planner = new RoutePlanner();
+      addV3ExactInTrades(planner, usdtSwapAmount, 0, syntheticTokenHub.address, [
+        [syntheticUsdtToken.address, syntheticWethToken.address, "0x1111111111111111111111111111111111111111"],
+      ]);
+
+      const { commands, inputs } = planner;
+
+      const _assetsIn = [{ tokenAddress: bUSDT.address, tokenAmount: usdtSwapAmount }];
+
+      const quoteFromHub = await syntheticTokenHub.quoteSwap(
+        user1.address,
+        _assetsIn,
+        syntheticBtcToken.address,
+        eidB,
+        eidC,
+        Options.newOptions().addExecutorLzReceiveOption(gasLimitFromHub, 0).toHex().toString()
+      );
+
+      const swapOptions = Options.newOptions()
+        .addExecutorLzReceiveOption(gasLimitToHub, quoteFromHub.toString())
+        .toHex()
+        .toString();
+
+      // 2. Create SwapParams with invalid data
+      const swapParams = {
+        from: user1.address,
+        to: user1.address,
+        syntheticTokenOut: syntheticBtcToken.address,
+        gasLimit: gasLimitToHub,
+        dstEid: eidC,
+        value: quoteFromHub,
+        assets: _assetsIn,
+        commands: commands,
+        inputs: inputs,
+      };
+
+      // 3. Get quote for the swap transaction
+      const nativeFee = await gatewayVaultB.quoteSwap(swapParams, swapOptions, _assetsIn);
+
+      // 4. Check the initial balances
+      const initialUserUsdtBalance = await bUSDT.balanceOf(user1.address);
+
+      // 5. Execute the swap - it should execute but the internal swap will fail and tokens should be returned
+      const tx = await gatewayVaultB.connect(user1).swap(swapParams, swapOptions, _assetsIn, {
+        value: nativeFee,
+      });
+      await tx.wait();
+
+      // 6. After failed swap and revert process, tokens should be returned to the user
+      const finalUserUsdtBalance = await bUSDT.balanceOf(user1.address);
+
+      // 7. Verify that tokens were returned
+      expect(finalUserUsdtBalance).to.be.equal(initialUserUsdtBalance);
+    });
+
+    it("should measure price impact during cross-chain swap", async function () {
+      // 1. Setup - Prepare for a larger swap to measure price impact
+      const largeSwapAmount = ethers.utils.parseUnits("5000", 6); // 5000 USDT
+      await bUSDT.connect(user2).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
+
+      // Ensure user2 has enough USDT for the test
+      await bUSDT.mint(user2.address, largeSwapAmount);
+
+      // 2. Get initial price quote for a small amount to establish baseline
+      const smallAmount = ethers.utils.parseUnits("100", 6); // 100 USDT
+
+      const smallQuote = await getMultiHopQuote(
+        true,
+        swapQuoterV3,
+        [syntheticUsdtToken.address, syntheticWethToken.address, syntheticBtcToken.address],
+        smallAmount,
+        [FeeAmount.LOW, FeeAmount.LOW]
+      );
+
+      const baselineRate = smallQuote.mul(ethers.utils.parseUnits("1", 6)).div(smallAmount);
+      console.log(`Baseline exchange rate (scaled): ${baselineRate}`);
+
+      // 3. Get quote for the large swap
+      const largeQuote = await getMultiHopQuote(
+        true,
+        swapQuoterV3,
+        [syntheticUsdtToken.address, syntheticWethToken.address, syntheticBtcToken.address],
+        largeSwapAmount,
+        [FeeAmount.LOW, FeeAmount.LOW]
+      );
+      const largeSwapRate = largeQuote.mul(ethers.utils.parseUnits("1", 6)).div(largeSwapAmount);
+      console.log(`Large swap exchange rate (scaled): ${largeSwapRate}`);
+
+      // 4. Calculate price impact
+      const priceImpactBps = baselineRate.sub(largeSwapRate).mul(10000).div(baselineRate);
+      console.log(`Price impact in basis points: ${priceImpactBps}`);
+
+      // 5. Verify that price impact is reasonable for the pool size
+      // For this test, we'll consider anything below 500 bps (5%) as acceptable
+      expect(priceImpactBps).to.be.lt(500);
+
+      // 6. Now perform the actual swap with measured price impact
+      const gasLimitFromHub = 2000_000;
+      const gasLimitToHub = 2000_000;
+
+      // Calculate minimum output with additional slippage tolerance
+      const totalSlippageBps = slippageTolerance + Number(priceImpactBps);
+      const minOutputAmount = largeQuote.mul(10000 - totalSlippageBps).div(10000);
+
+      const planner = new RoutePlanner();
+      addV3ExactInTrades(planner, largeSwapAmount, minOutputAmount, syntheticTokenHub.address, [
+        [syntheticUsdtToken.address, syntheticWethToken.address, syntheticBtcToken.address],
+      ]);
+      const { commands, inputs } = planner;
+
+      const _assetsIn = [{ tokenAddress: bUSDT.address, tokenAmount: largeSwapAmount }];
+
+      const quoteFromHub = await syntheticTokenHub.quoteSwap(
+        user2.address,
+        _assetsIn,
+        syntheticBtcToken.address,
+        eidB,
+        eidC,
+        Options.newOptions().addExecutorLzReceiveOption(gasLimitFromHub, 0).toHex().toString()
+      );
+
+      const swapOptions = Options.newOptions()
+        .addExecutorLzReceiveOption(gasLimitToHub, quoteFromHub.toString())
+        .toHex()
+        .toString();
+
+      const swapParams = {
+        from: user2.address,
+        to: user2.address,
+        syntheticTokenOut: syntheticBtcToken.address,
+        gasLimit: gasLimitToHub,
+        dstEid: eidC,
+        value: quoteFromHub,
+        assets: _assetsIn,
+        commands: commands,
+        inputs: inputs,
+      };
+
+      const nativeFee = await gatewayVaultB.quoteSwap(swapParams, swapOptions, _assetsIn);
+
+      // 7. Execute the swap with our calculated slippage
+      const initialUserBtcBalance = await cWBTC.balanceOf(user2.address);
+
+      const tx = await gatewayVaultB.connect(user2).swap(swapParams, swapOptions, _assetsIn, {
+        value: nativeFee,
+      });
+      await tx.wait();
+
+      // 8. Verify the outcome
+      const finalUserBtcBalance = await cWBTC.balanceOf(user2.address);
+      const btcReceived = finalUserBtcBalance.sub(initialUserBtcBalance);
+
+      console.log(`BTC received from large swap: ${ethers.utils.formatUnits(btcReceived, 8)}`);
+
+      // 9. Verify received amount meets our expected minimum
+      expect(btcReceived).to.be.gte(minOutputAmount);
+
+      // 10. Calculate actual vs expected slippage
+      const actualSlippage = largeQuote.sub(btcReceived).mul(10000).div(largeQuote);
+      console.log(`Expected max slippage: ${totalSlippageBps} bps, Actual: ${actualSlippage} bps`);
+
+      expect(actualSlippage).to.be.lte(totalSlippageBps);
     });
   });
 
   describe("Gateway Vault", function () {
-    it("should add supported tokens correctly", async function () {
-      // Deploy a test token
-      const testToken = await MockERC20Factory.deploy("Test Token", "TEST", 18);
-
-      // Add token support
-      await gatewayVault.addAvailableTokens([
-        {
-          tokenAddress: testToken.address,
-          expectedDecimals: 18,
-        },
-      ]);
-
-      // Check token was added correctly
-      const tokenCount = await gatewayVault.getAvailableTokenLength();
-      expect(tokenCount).to.equal(2);
-    });
-
     it("should not allow non-owner to add tokens", async function () {
       // Try to add token as non-owner
-      await expect(
-        gatewayVault.connect(user1).addAvailableTokens([
-          {
-            tokenAddress: "0x1111111111111111111111111111111111111111",
-            expectedDecimals: 18,
-          },
-        ])
-      ).to.be.reverted;
+      const tokenSetupConfig = [
+        {
+          onPause: false,
+          tokenAddress: "0x1111111111111111111111111111111111111111",
+          syntheticTokenDecimals: 18,
+          syntheticTokenAddress: syntheticWethToken.address,
+        },
+      ];
+
+      const options = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      await expect(gatewayVaultB.connect(user1).linkTokenToHub(tokenSetupConfig, options)).to.be.reverted;
     });
 
     it("should pause token correctly", async function () {
       // Pause token
-      await gatewayVault.pauseToken(0, true);
+      await gatewayVaultB.pauseToken(bUSDT.address, true);
 
       // Check token is paused
-      const tokenDetail = await gatewayVault.availableTokens(0);
+      const tokenDetail = await gatewayVaultB.availableTokens(0);
       expect(tokenDetail.onPause).to.equal(true);
 
       // Unpause token
-      await gatewayVault.pauseToken(0, false);
-      const updatedToken = await gatewayVault.availableTokens(0);
+      await gatewayVaultB.pauseToken(bUSDT.address, false);
+      const updatedToken = await gatewayVaultB.availableTokens(0);
       expect(updatedToken.onPause).to.equal(false);
     });
 
     it("should correctly quote transaction fees", async function () {
-      await setupWithToken();
-
-      // Define deposit amount
-      const depositAmount = ethers.utils.parseEther("100");
-
       // Calculate message fee with options
       const options = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
 
       // Get required fee
-      const nativeFee = await gatewayVault.quote(
+      const nativeFee = await gatewayVaultB.quoteDeposit(
         user2.address,
-        [{ tokenIndex: 0, tokenAmount: depositAmount }],
+        [{ tokenAddress: bUSDT.address, tokenAmount: ethers.utils.parseUnits("100", 6) }],
         options
       );
 
@@ -588,17 +854,24 @@ describe("Synthetic Token System", function () {
   });
 
   describe("System Integration", function () {
-    it("should get all synthetic tokens correctly", async function () {
-      await setupWithToken();
+    it("should get token information correctly", async function () {
+      // Get token info from synthetic hub
+      const tokenInfo = await syntheticTokenHub.getSyntheticTokenInfo(1);
 
-      // Add second token
-      await syntheticTokenHub.addSyntheticToken("ETH", 18);
+      // Check the token properties
+      expect(tokenInfo.syntheticTokenInfo.tokenAddress).to.equal(syntheticUsdtToken.address);
+      expect(tokenInfo.syntheticTokenInfo.tokenSymbol).to.equal("USDT");
+      expect(tokenInfo.syntheticTokenInfo.tokenDecimals).to.equal(6);
+    });
 
-      // Get all tokens
-      const tokens = await syntheticTokenHub.getAllSyntheticTokens();
-      expect(tokens.length).to.equal(2);
-      expect(tokens[0].tokenSymbol).to.equal("TEST");
-      expect(tokens[1].tokenSymbol).to.equal("ETH");
+    it("should verify token registration status", async function () {
+      // Check registered token
+      const isRegistered = await syntheticTokenHub.isTokenRegistered(syntheticUsdtToken.address);
+      expect(isRegistered).to.equal(true);
+
+      // Check non-registered token
+      const isNotRegistered = await syntheticTokenHub.isTokenRegistered("0x0000000000000000000000000000000000000001");
+      expect(isNotRegistered).to.equal(false);
     });
   });
 });
