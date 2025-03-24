@@ -41,6 +41,11 @@ const config: HardhatUserConfig = {
   },
   networks: {
     hardhat: {
+      chainId: 1,
+      forking: {
+        url: process.env.RPC_URL ?? "",
+        blockNumber: 17329500,
+      },
       allowBlocksWithSameTimestamp: true,
       allowUnlimitedContractSize: true,
       blockGasLimit: 40000000,
@@ -103,7 +108,7 @@ const config: HardhatUserConfig = {
     },
   },
   mocha: {
-    timeout: 100000,
+    timeout: 1000000,
   },
   // etherscan: {
   //   apiKey: {

@@ -11,6 +11,8 @@ import { ISyntheticToken } from "./interfaces/ISyntheticToken.sol";
 import { SyntheticToken } from "./SyntheticToken.sol";
 import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
 
+// import { console } from "hardhat/console.sol";
+
 /**
  * @title SyntheticTokenHub
  * @notice Central contract managing synthetic tokens for cross-chain interaction
@@ -93,9 +95,9 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     mapping(address => uint256) private _tokenIndexByAddress;
 
     // Mapping for token lookup by network and remote address
-    mapping(uint32 => mapping(address => address)) public _syntheticAddressByRemoteAddress; // eid => remote address => token address
+    mapping(uint32 => mapping(address => address)) public syntheticAddressByRemoteAddress; // eid => remote address => token address
     // Mapping for token lookup by network and synthetic address
-    mapping(uint32 => mapping(address => address)) public _remoteAddressBySyntheticAddress; // eid => token address => remote address
+    mapping(uint32 => mapping(address => address)) public remoteAddressBySyntheticAddress; // eid => token address => remote address
     mapping(uint32 => address) public gatewayVaultByEid; // eid => gateway vault address
 
     // Add constant for the base token name
@@ -139,7 +141,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         uint256 length = _tokenIndices.length > 0 ? _tokenIndices.length : syntheticTokenCount;
         SyntheticTokenView[] memory tokens = new SyntheticTokenView[](length);
         if (_tokenIndices.length == 0) {
-            for (uint256 i = 1; i < length; i++) {
+            for (uint256 i = 0; i < length; i++) {
                 tokens[i] = getSyntheticTokenInfo(i + 1);
             }
         } else {
@@ -285,7 +287,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
      * @param _options LayerZero transaction options
      * @return nativeFee Cost in native currency
      */
-    function quote(
+    function quoteBridgeTokens(
         address _recipient,
         Asset[] memory _assets,
         uint32 _dstEid,
@@ -304,10 +306,10 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         nativeFee = (_quote(_dstEid, payload, _options, false)).nativeFee;
     }
 
-    function quote(
+    function quoteSwap(
         address _recipient,
         Asset[] calldata _assetsIn,
-        Asset[] calldata _assetsOut,
+        address syntheticTokenOut,
         uint32 srcEid,
         uint32 dstEid,
         bytes calldata options
@@ -322,12 +324,21 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             "THIS_IS_FAKE_ERROR_MESSAGE"
         );
         bytes memory payloadRevert = abi.encode(MessageType.RevertSwap, msgDataRevert);
+        Asset[] memory _assetsOut = new Asset[](1);
+        _assetsOut[0] = Asset({ tokenAddress: syntheticTokenOut, tokenAmount: 1 });
         bytes memory msgDataSwap = abi.encode(_recipient, _recipient, _assetsOut);
         bytes memory payloadSwap = abi.encode(MessageType.Swap, msgDataSwap);
 
         uint256 feeRevert = (_quote(dstEid, payloadRevert, options, false)).nativeFee;
         uint256 feeSwap = (_quote(srcEid, payloadSwap, options, false)).nativeFee;
         return feeRevert > feeSwap ? feeRevert : feeSwap;
+    }
+
+    function validateAndPrepareAssets(
+        Asset[] memory _assets,
+        uint32 _dstEid
+    ) private view returns (Asset[] memory assets, string memory errorMessage) {
+        return _validateAndPrepareAssets(_assets, _dstEid);
     }
 
     /**
@@ -484,8 +495,8 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             SyntheticTokenInfo storage tokenInfo = syntheticTokens[_tokenIndex];
             tokenInfo.chainList.push(_srcEid);
             // Add token to lookup by remote address
-            _syntheticAddressByRemoteAddress[_srcEid][remoteTokenAddress] = syntheticTokenAddress;
-            _remoteAddressBySyntheticAddress[_srcEid][syntheticTokenAddress] = remoteTokenAddress;
+            syntheticAddressByRemoteAddress[_srcEid][remoteTokenAddress] = syntheticTokenAddress;
+            remoteAddressBySyntheticAddress[_srcEid][syntheticTokenAddress] = remoteTokenAddress;
         }
 
         emit RemoteTokenLinked(_availableTokens, _sender, _srcEid);
@@ -496,16 +507,17 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         uint32 _srcEid
     ) external returns (bytes memory payload) {
         require(msg.sender == address(this), "INVALID_SENDER");
+        address[] memory syntheticTokensIn = new address[](params.assets.length);
 
         uint256 length = params.assets.length;
         for (uint256 i = 0; i < length; i++) {
             Asset memory asset = params.assets[i];
-            address syntheticTokenAddress = _syntheticAddressByRemoteAddress[_srcEid][
+            address syntheticTokenAddress = syntheticAddressByRemoteAddress[_srcEid][
                 asset.tokenAddress
             ];
             require(syntheticTokenAddress != address(0), "SYNTHETIC_NOT_FOUND");
-
-            RemoteTokenInfo storage remoteToken = remoteTokens[syntheticTokenAddress][_srcEid]; // balance not updated
+            syntheticTokensIn[i] = syntheticTokenAddress;
+            RemoteTokenInfo storage remoteToken = remoteTokens[syntheticTokenAddress][_srcEid];
 
             // Normalize amount
             uint256 normalizedAmount = _normalizeAmount(
@@ -541,11 +553,23 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         } else {
             errorMessage = returndata.length > 0 ? string(returndata) : "SWAP_FAILED";
         }
+
         if (bytes(errorMessage).length > 0) {
             revert(errorMessage);
+        } else {
+            _collectDust(syntheticTokensIn, params.from);
         }
 
         return payload;
+    }
+
+    function _collectDust(address[] memory syntheticTokensIn, address recipient) private {
+        for (uint256 i = 0; i < syntheticTokensIn.length; i++) {
+            uint256 balance = syntheticTokensIn[i].getBalanceOf(address(this));
+            if (balance > 0) {
+                syntheticTokensIn[i].safeTransfer(recipient, balance);
+            }
+        }
     }
 
     /**
@@ -559,7 +583,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
 
         for (uint256 i = 0; i < _assets.length; i++) {
             Asset memory asset = _assets[i];
-            address syntheticTokenAddress = _syntheticAddressByRemoteAddress[_srcEid][
+            address syntheticTokenAddress = syntheticAddressByRemoteAddress[_srcEid][
                 asset.tokenAddress
             ];
             require(syntheticTokenAddress != address(0), "Synthetic token not found");
