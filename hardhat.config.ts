@@ -1,6 +1,7 @@
 import "dotenv/config";
 import "hardhat-deploy";
 import "hardhat-contract-sizer";
+import "hardhat-storage-layout";
 import "@nomiclabs/hardhat-ethers";
 import "@layerzerolabs/toolbox-hardhat";
 import { HardhatUserConfig } from "hardhat/types";
