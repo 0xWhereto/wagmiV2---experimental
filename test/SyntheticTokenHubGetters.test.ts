@@ -96,7 +96,7 @@ describe("SyntheticTokenHubGetters", function () {
     await mockEndpointV2A.deployed();
 
     BalancerFactory = await ethers.getContractFactory("Balancer");
-    balancer = await BalancerFactory.deploy();
+    balancer = await BalancerFactory.deploy(deployer.address);
 
     syntheticTokenHub = await SyntheticTokenHubFactory.deploy(
       mockEndpointV2A.address,
@@ -566,6 +566,235 @@ describe("SyntheticTokenHubGetters", function () {
       expect(await remoteToken.balanceOf(user1.address)).to.equal(depositAmount);
     });
 
+    it("should correctly track bonusBalance after penalty-inducing withdrawal", async function () {
+      this.timeout(30000); // Increased timeout for multi-step test
+
+      // Create and link a new token for this test to avoid state conflicts
+      const bonusTestTokenSymbol = "BONUS_TEST";
+      const bonusTestTokenDecimals = 18;
+
+      // Create synthetic token
+      const txCreate = await syntheticTokenHub.createSyntheticToken(bonusTestTokenSymbol, bonusTestTokenDecimals);
+      const receiptCreate = await txCreate.wait();
+      const eventCreate = receiptCreate.logs.find((log: any) => {
+        try {
+          const parsed = syntheticTokenHub.interface.parseLog(log);
+          return parsed && parsed.name === "SyntheticTokenAdded";
+        } catch {
+          return false;
+        }
+      });
+      const parsedEventCreate = eventCreate ? syntheticTokenHub.interface.parseLog(eventCreate) : null;
+      const syntheticBonusTokenAddress = parsedEventCreate
+        ? parsedEventCreate.args.tokenAddress
+        : ethers.constants.AddressZero;
+      const syntheticBonusToken = await ethers.getContractAt("SyntheticToken", syntheticBonusTokenAddress);
+
+      // Create remote token with same decimals
+      const remoteChainIdForBonus = 2; // Use one of the existing remote chains
+      const remoteBonusToken = await MockERC20Factory.deploy(
+        bonusTestTokenSymbol,
+        bonusTestTokenSymbol,
+        bonusTestTokenDecimals
+      );
+      await remoteBonusToken.deployed();
+
+      // --- Setup for multi-chain to inflate total supply ---
+      const dummyRemoteChainIdForSupply = NUM_REMOTE_CHAINS + 2; // Ensure a new EID
+      const mockEndpointDummy = await EndpointV2MockFactory.deploy(dummyRemoteChainIdForSupply);
+      await mockEndpointDummy.deployed();
+      const gatewayVaultDummy = await GatewayVaultFactory.deploy(mockEndpointDummy.address, deployer.address, eidA);
+      await gatewayVaultDummy.deployed();
+      gatewayVaults[dummyRemoteChainIdForSupply] = gatewayVaultDummy; // Store for potential cleanup or later use
+      mockEndpoints[dummyRemoteChainIdForSupply] = mockEndpointDummy;
+
+      await mockEndpointV2A.setDestLzEndpoint(gatewayVaultDummy.address, mockEndpointDummy.address);
+      await mockEndpointDummy.setDestLzEndpoint(syntheticTokenHub.address, mockEndpointV2A.address);
+
+      const synthTokenHubAddressBytes32 = ethers.utils.zeroPad(syntheticTokenHub.address, 32);
+      const gatewayVaultDummyAddressBytes32 = ethers.utils.zeroPad(gatewayVaultDummy.address, 32);
+      await syntheticTokenHub.setPeer(dummyRemoteChainIdForSupply, gatewayVaultDummyAddressBytes32);
+      await gatewayVaultDummy.setPeer(eidA, synthTokenHubAddressBytes32);
+
+      const remoteBonusTokenDummy = await MockERC20Factory.deploy(
+        bonusTestTokenSymbol,
+        bonusTestTokenSymbol,
+        bonusTestTokenDecimals
+      );
+      await remoteBonusTokenDummy.deployed();
+
+      const tokenSetupConfigDummy: GatewayVault.TokenSetupConfigStruct[] = [
+        {
+          onPause: false,
+          tokenAddress: remoteBonusTokenDummy.address,
+          syntheticTokenDecimals: bonusTestTokenDecimals,
+          syntheticTokenAddress: syntheticBonusTokenAddress,
+        },
+      ];
+      const linkOptionsDummy = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex();
+      const linkFeeDummy = await gatewayVaultDummy.quoteLinkTokenToHub(tokenSetupConfigDummy, linkOptionsDummy);
+      await gatewayVaultDummy.linkTokenToHub(tokenSetupConfigDummy, linkOptionsDummy, { value: linkFeeDummy });
+      // --- End of multi-chain setup ---
+
+      // Configure Balancer for this specific token to ensure penalty generation
+      const BPS = ethers.BigNumber.from(10).pow(6); // 1e6 from Balancer contract
+      // const chainLengthForBonusToken = 1; // This will now be 2 after linking to dummy chain
+      await balancer.setTokenConfig(
+        syntheticBonusTokenAddress,
+        remoteChainIdForBonus, // We are interested in penalties on this specific chain
+        BPS.div(10), // Target for this chain is 10% of total supply (BPS / num_effective_chains_for_calc)
+        10 // Higher curve flattener: 10 (max is 11)
+      );
+
+      // Link token
+      const tokenSetupConfigBonus: GatewayVault.TokenSetupConfigStruct[] = [
+        {
+          onPause: false,
+          tokenAddress: remoteBonusToken.address,
+          syntheticTokenDecimals: bonusTestTokenDecimals,
+          syntheticTokenAddress: syntheticBonusTokenAddress,
+        },
+      ];
+
+      const linkOptions = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex();
+      const linkFee = await gatewayVaults[remoteChainIdForBonus].quoteLinkTokenToHub(
+        tokenSetupConfigBonus,
+        linkOptions
+      );
+      await gatewayVaults[remoteChainIdForBonus].linkTokenToHub(tokenSetupConfigBonus, linkOptions, { value: linkFee });
+
+      for (let i = 0; i < 10; i++) {
+        // Ensure linking messages are processed
+        await ethers.provider.send("evm_mine", []);
+      }
+
+      // --- Deposit to dummy chain to inflate total supply ---
+      const largeDepositToDummyChain = ethers.utils.parseUnits("1000", bonusTestTokenDecimals);
+      await remoteBonusTokenDummy.mint(deployer.address, largeDepositToDummyChain); // Mint to deployer
+      await remoteBonusTokenDummy.connect(deployer).approve(gatewayVaultDummy.address, largeDepositToDummyChain);
+      const depositOptionsDummy = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const depositFeeDummy = await gatewayVaultDummy.quoteDeposit(
+        deployer.address, // recipient on hub chain
+        [{ tokenAddress: remoteBonusTokenDummy.address, tokenAmount: largeDepositToDummyChain }],
+        depositOptionsDummy
+      );
+      await gatewayVaultDummy.connect(deployer).deposit(
+        deployer.address, // recipient on hub chain
+        [{ tokenAddress: remoteBonusTokenDummy.address, tokenAmount: largeDepositToDummyChain }],
+        depositOptionsDummy,
+        { value: depositFeeDummy }
+      );
+      // Now syntheticBonusTokenAddress.totalSupply() should be ~1000
+
+      // Initial bonus balance on test chain should be 0
+      let initialBonus = await syntheticTokenHubGetters.getBonusBalance(
+        syntheticBonusTokenAddress,
+        remoteChainIdForBonus
+      );
+      expect(initialBonus).to.equal(0);
+
+      // --- Deposit tokens first ---
+      const depositAmountBonus = ethers.utils.parseUnits("200", bonusTestTokenDecimals);
+      await remoteBonusToken.mint(user1.address, depositAmountBonus);
+      await remoteBonusToken.connect(user1).approve(gatewayVaults[remoteChainIdForBonus].address, depositAmountBonus);
+
+      const depositOptionsBonus = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const depositFeeBonus = await gatewayVaults[remoteChainIdForBonus].quoteDeposit(
+        user1.address,
+        [{ tokenAddress: remoteBonusToken.address, tokenAmount: depositAmountBonus }],
+        depositOptionsBonus
+      );
+      await gatewayVaults[remoteChainIdForBonus]
+        .connect(user1)
+        .deposit(
+          user1.address,
+          [{ tokenAddress: remoteBonusToken.address, tokenAmount: depositAmountBonus }],
+          depositOptionsBonus,
+          {
+            value: depositFeeBonus,
+          }
+        );
+
+      // --- Perform a withdrawal that incurs a penalty ---
+      // Withdraw a portion that is likely to cause a penalty
+      const withdrawAmountBonus = ethers.utils.parseUnits("150", bonusTestTokenDecimals); // Increased from 10 to 150
+      await syntheticBonusToken.connect(user1).approve(syntheticTokenHub.address, withdrawAmountBonus);
+
+      const withdrawOptionsBonus = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const [withdrawFeeBonus, , penaltiesBonus] = await syntheticTokenHub.quoteBridgeTokens(
+        user1.address,
+        [{ tokenAddress: syntheticBonusTokenAddress, tokenAmount: withdrawAmountBonus }],
+        remoteChainIdForBonus,
+        withdrawOptionsBonus
+      );
+
+      // Expect penalty to be greater than 0 for this test to be meaningful
+      // Note: The exact penalty depends on balancer logic and current state,
+      // but for a significant withdrawal from a freshly topped-up pool, a penalty is expected.
+      // We will check that the bonus balance equals this penalty.
+      expect(penaltiesBonus[0]).to.be.gt(0);
+
+      await syntheticTokenHub
+        .connect(user1)
+        .bridgeTokens(
+          user1.address,
+          [{ tokenAddress: syntheticBonusTokenAddress, tokenAmount: withdrawAmountBonus }],
+          remoteChainIdForBonus,
+          withdrawOptionsBonus,
+          { value: withdrawFeeBonus }
+        );
+
+      // Check bonus balance after withdrawal
+      const finalBonus = await syntheticTokenHubGetters.getBonusBalance(
+        syntheticBonusTokenAddress,
+        remoteChainIdForBonus
+      );
+      expect(finalBonus).to.equal(penaltiesBonus[0]);
+
+      // --- Perform another deposit to see if bonus is used ---
+      const secondDepositAmount = ethers.utils.parseUnits("5", bonusTestTokenDecimals); // Smaller amount
+      await remoteBonusToken.mint(user1.address, secondDepositAmount);
+      await remoteBonusToken.connect(user1).approve(gatewayVaults[remoteChainIdForBonus].address, secondDepositAmount);
+
+      const initialSynthBalanceBeforeSecondDeposit = await syntheticBonusToken.balanceOf(user1.address);
+
+      const secondDepositOptions = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const secondDepositFee = await gatewayVaults[remoteChainIdForBonus].quoteDeposit(
+        user1.address,
+        [{ tokenAddress: remoteBonusToken.address, tokenAmount: secondDepositAmount }],
+        secondDepositOptions
+      );
+      await gatewayVaults[remoteChainIdForBonus]
+        .connect(user1)
+        .deposit(
+          user1.address,
+          [{ tokenAddress: remoteBonusToken.address, tokenAmount: secondDepositAmount }],
+          secondDepositOptions,
+          {
+            value: secondDepositFee,
+          }
+        );
+
+      const finalSynthBalanceAfterSecondDeposit = await syntheticBonusToken.balanceOf(user1.address);
+      const mintedAmount = finalSynthBalanceAfterSecondDeposit.sub(initialSynthBalanceBeforeSecondDeposit);
+
+      // User should receive the deposit amount + the bonus that was available
+      // We need to calculate the expected bonus based on the current state using Balancer's logic
+      // This part is complex as it mirrors Balancer's internal logic.
+      // For simplicity here, we check if more than deposited amount was received if bonus was available.
+      // A more precise check would involve calling balancer.getBonus()
+      if (penaltiesBonus[0].gt(0)) {
+        expect(mintedAmount).to.be.gt(secondDepositAmount);
+      }
+
+      // Bonus balance should be reduced or zeroed out after being used
+      const bonusAfterSecondDeposit = await syntheticTokenHubGetters.getBonusBalance(
+        syntheticBonusTokenAddress,
+        remoteChainIdForBonus
+      );
+      expect(bonusAfterSecondDeposit).to.be.lt(finalBonus); // Should be less than before if bonus was applied
+    });
+
     it("should return correct token index via getTokenIndexByAddress", async function () {
       // Test for all synthetic tokens
       for (let i = 0; i < NUM_SYNTHETIC_TOKENS; i++) {
@@ -672,7 +901,7 @@ describe("SyntheticTokenHubGetters", function () {
       // Get the current token count
       const totalTokenCount = await syntheticTokenHubGetters.getSyntheticTokenCount();
 
-      expect(totalTokenCount).to.be.eq(NUM_SYNTHETIC_TOKENS + 2); //+TEST and DIF tokens
+      expect(totalTokenCount).to.be.eq(NUM_SYNTHETIC_TOKENS + 3); //+TEST, DIFF and BONUS_TEST tokens
       // Call with empty array
       const emptyIndicesArray: number[] = [];
       const tokensInfo = await syntheticTokenHubGetters.getSyntheticTokensInfo(emptyIndicesArray);
@@ -681,8 +910,8 @@ describe("SyntheticTokenHubGetters", function () {
       expect(tokensInfo.length).to.equal(totalTokenCount);
 
       // Verify the data is valid
-      for (let i = 0; i < totalTokenCount.toNumber() - 2; i++) {
-        //-TEST and DIF tokens
+      for (let i = 0; i < totalTokenCount.toNumber() - 3; i++) {
+        // -TEST, DIFF and BONUS_TEST tokens
         expect(tokensInfo[i].tokenIndex).to.equal(i + 1); // Token indices are 1-based
         expect(tokensInfo[i].syntheticTokenInfo.tokenAddress).to.not.equal(ethers.constants.AddressZero);
         expect(tokensInfo[i].syntheticTokenInfo.tokenSymbol).to.not.equal("");

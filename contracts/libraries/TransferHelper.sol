@@ -50,13 +50,6 @@ library TransferHelper {
         return abi.decode(data, (uint8));
     }
 
-    function totalSupply(address token) internal view returns (uint256) {
-        bytes memory callData = abi.encodeWithSelector(ERC20.totalSupply.selector);
-        (bool success, bytes memory data) = token.staticcall(callData);
-        require(success && data.length >= 32);
-        return abi.decode(data, (uint256));
-    }
-
     function safeApprove(address token, address spender, uint256 amount) internal {
         (bool success, bytes memory data) = token.call(
             abi.encodeWithSelector(ERC20.approve.selector, spender, amount)

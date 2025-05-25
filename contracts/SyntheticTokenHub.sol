@@ -495,11 +495,11 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
                 remoteToken.totalBalance
             );
             _bonusBalance[syntheticTokenAddress][_srcEid] -= bonus;
+            // Add bonus
+            normalizedAmount += bonus;
 
             // Increase source network balance
             remoteToken.totalBalance += normalizedAmount;
-            // Add bonus
-            normalizedAmount += bonus;
 
             // Mint synthetic token
             ISyntheticToken(syntheticTokenAddress).mint(address(this), normalizedAmount);
@@ -735,10 +735,11 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             );
             _bonusBalance[syntheticTokenAddress][_srcEid] -= bonus;
 
-            // Increase source network balance
-            remoteToken.totalBalance += normalizedAmount;
             // Add bonus
             normalizedAmount += bonus;
+
+            // Increase source network balance
+            remoteToken.totalBalance += normalizedAmount;
 
             // Mint synthetic token
             ISyntheticToken(syntheticTokenAddress).mint(_to, normalizedAmount);
@@ -768,6 +769,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     ) private view returns (uint256) {
         uint256 _tokenIndex = _tokenIndexByAddress[_syntheticTokenAddress];
         SyntheticTokenInfo memory tokenInfo = _syntheticTokens[_tokenIndex];
+
         uint256 penalty = IBalancer(balancer).getPenalty(
             _syntheticTokenAddress,
             _dstEid,

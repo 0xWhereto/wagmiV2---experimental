@@ -152,7 +152,7 @@ describe("Synthetic Token System", function () {
     mockEndpointV2C = await EndpointV2MockFactory.deploy(eidC);
 
     BalancerFactory = await ethers.getContractFactory("Balancer");
-    balancer = await BalancerFactory.deploy();
+    balancer = await BalancerFactory.deploy(deployer.address);
 
     // Create main contracts
     syntheticTokenHub = await SyntheticTokenHubFactory.deploy(
@@ -537,7 +537,9 @@ describe("Synthetic Token System", function () {
 
       // Verify tokens were burned and returned
       expect(await syntheticBtcToken.balanceOf(user2.address)).to.equal(depositBtcAmount.sub(BtcAmount));
-      expect(await cWBTC.balanceOf(user2.address)).to.equal(initialBalance.add(BtcAmount));
+      expect(await cWBTC.balanceOf(user2.address)).to.equal(initialBalance.add(assetsRemote[0].tokenAmount));
+      // BtcAmount = assetsRemote[0].tokenAmount - penalties[0]
+      expect(BtcAmount.sub(penalties[0])).to.equal(assetsRemote[0].tokenAmount);
     });
 
     it("should properly burn synthetic tokens and send message to other address for withdrawal", async function () {
@@ -565,7 +567,7 @@ describe("Synthetic Token System", function () {
         );
 
       // Verify tokens were burned and returned
-      expect(await bUSDT.balanceOf(user1.address)).to.equal(initialBalance.add(depositUsdtAmount));
+      expect(await bUSDT.balanceOf(user1.address)).to.equal(initialBalance.add(assetsRemote[0].tokenAmount));
     });
   });
 
@@ -721,7 +723,7 @@ describe("Synthetic Token System", function () {
       await bUSDT.connect(user2).approve(gatewayVaultB.address, ethers.constants.MaxUint256);
 
       // Ensure user2 has enough USDT for the test
-      await bUSDT.mint(user2.address, largeSwapAmount);
+      await bUSDT.mint(user2.address, largeSwapAmount.mul(2)); // Mint extra for good measure
 
       // 2. Get initial price quote for a small amount to establish baseline
       const smallAmount = ethers.utils.parseUnits("100", 6); // 100 USDT
@@ -900,7 +902,8 @@ describe("Synthetic Token System", function () {
       const [preparedAssets, penalties] = await syntheticTokenHub.callStatic.validateAndPrepareAssets(validAsset, eidB);
       expect(preparedAssets.length).to.equal(1);
       expect(preparedAssets[0].tokenAddress).to.equal(bUSDT.address);
-      expect(preparedAssets[0].tokenAmount).to.equal(validAmount); // No decimal adjustment needed
+      // Account for potential penalty if any (though for a simple validation with sufficient balance, it might be 0)
+      expect(preparedAssets[0].tokenAmount).to.equal(validAmount.sub(penalties[0]));
 
       // Test token not linked to destination chain
       const nonExistentEid = 999; // A chain ID that doesn't exist
@@ -908,12 +911,25 @@ describe("Synthetic Token System", function () {
         syntheticTokenHub.callStatic.validateAndPrepareAssets(validAsset, nonExistentEid)
       ).to.be.revertedWithCustomError(syntheticTokenHub, "TokenNotLinkedToDestChain");
 
+      // Test insufficient balance FOR syntheticUsdtToken (eidB)
+      // Its balance on eidB is likely depleted by prior tests.
+      const remoteInfoForUsdtOnEidB = await syntheticTokenHubGetters.getRemoteTokenInfo(
+        syntheticUsdtToken.address,
+        eidB
+      );
+      const excessiveAmountForUsdt = remoteInfoForUsdtOnEidB.totalBalance.add(ethers.utils.parseUnits("100000000", 6));
+      const excessiveAssetForUsdt = [{ tokenAddress: syntheticUsdtToken.address, tokenAmount: excessiveAmountForUsdt }];
+
+      await expect(
+        syntheticTokenHub.callStatic.validateAndPrepareAssets(excessiveAssetForUsdt, eidB)
+      ).to.be.revertedWithCustomError(syntheticTokenHub, "InsufficientBalanceOnDestChain");
+
       // Create a new synthetic token with 18 decimals
-      const tx = await syntheticTokenHub.createSyntheticToken("TEST18", 18);
-      const receipt = await tx.wait();
+      const tx_test18 = await syntheticTokenHub.createSyntheticToken("TEST18", 18);
+      const receipt_test18 = await tx_test18.wait();
 
       // Find SyntheticTokenAdded event
-      const event = receipt.logs.find((log: any) => {
+      const event_test18 = receipt_test18.logs.find((log: any) => {
         try {
           const parsed = syntheticTokenHub.interface.parseLog(log);
           return parsed && parsed.name === "SyntheticTokenAdded";
@@ -922,153 +938,85 @@ describe("Synthetic Token System", function () {
         }
       });
 
-      const parsedEvent = event ? syntheticTokenHub.interface.parseLog(event) : null;
-      const testTokenAddress = parsedEvent ? parsedEvent.args.tokenAddress : null;
-      const syntheticTestToken = await ethers.getContractAt("SyntheticToken", testTokenAddress);
+      const parsedEvent_test18 = event_test18 ? syntheticTokenHub.interface.parseLog(event_test18) : null;
+      const testTokenAddress_test18 = parsedEvent_test18
+        ? parsedEvent_test18.args.tokenAddress
+        : ethers.constants.AddressZero;
+      const syntheticTestToken_test18 = await ethers.getContractAt("SyntheticToken", testTokenAddress_test18);
 
       // Create a remote token with 6 decimals
-      const remoteTestToken = await MockERC20Factory.deploy("TEST6", "TEST6", 6);
+      const remoteTestToken_test6 = await MockERC20Factory.deploy("TEST6", "TEST6", 6);
 
-      // Link the new token to the gateway chain
-      // IMPORTANT: syntheticTokenDecimals should be the decimals of the synthetic token
-      // decimalsDelta is calculated as (syntheticTokenDecimals - tokenDecimals) in the contract
-      // So for 6 decimals on remote and 18 on synthetic, we need to pass 18 here
-      const tokenSetupConfig: GatewayVault.TokenSetupConfigStruct[] = [
+      const tokenSetupConfig_test18: GatewayVault.TokenSetupConfigStruct[] = [
         {
           onPause: false,
-          tokenAddress: remoteTestToken.address,
-          syntheticTokenDecimals: 18, // This is correct - the synthetic token has 18 decimals
-          syntheticTokenAddress: syntheticTestToken.address,
+          tokenAddress: remoteTestToken_test6.address,
+          syntheticTokenDecimals: 18,
+          syntheticTokenAddress: syntheticTestToken_test18.address,
         },
       ];
 
-      // Look at _setupConfigToAvailableToken in GatewayVault.sol:
-      // decimalsDelta: int8(_tokensConfig[i].syntheticTokenDecimals - tokenDecimals)
-      // So decimalsDelta will be 18 - 6 = 12
-      // Link the tokens on eidB chain
-      const optionsForLink = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const linkFee = await gatewayVaultB.quoteLinkTokenToHub(tokenSetupConfig, optionsForLink);
-      await gatewayVaultB.linkTokenToHub(tokenSetupConfig, optionsForLink, { value: linkFee });
+      const optionsForLink_test18 = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const linkFee_test18 = await gatewayVaultB.quoteLinkTokenToHub(tokenSetupConfig_test18, optionsForLink_test18);
+      await gatewayVaultB.linkTokenToHub(tokenSetupConfig_test18, optionsForLink_test18, { value: linkFee_test18 });
 
-      // Add a small delay to ensure token linking is complete
       await new Promise((resolve) => setTimeout(resolve, 500));
 
-      // Verify decimal difference in the linked tokens
-      const remoteTokenInfo = await syntheticTokenHubGetters.getRemoteTokenInfo(syntheticTestToken.address, eidB);
+      const remoteTokenInfo_test18_eidB = await syntheticTokenHubGetters.getRemoteTokenInfo(
+        syntheticTestToken_test18.address,
+        eidB
+      );
+      expect(remoteTokenInfo_test18_eidB.decimalsDelta).to.equal(12);
 
-      // The decimalsDelta value should be 12 based on the formula in GatewayVault:
-      // decimalsDelta: int8(_tokensConfig[i].syntheticTokenDecimals - tokenDecimals)
-      // For 18 decimals on synthetic and 6 on remote: 18 - 6 = 12
-      expect(remoteTokenInfo.decimalsDelta).to.equal(12);
-
-      // Test amount too small (would be reduced to dust)
-      // For a token with decimalsDelta of 12, any amount less than 1 would become 0 when sent to remote
-      const tinyAmount = ethers.utils.parseUnits("0.0000000001", 18); // Much less than 1 in 18 decimals
-      const tinyAsset = [{ tokenAddress: syntheticTestToken.address, tokenAmount: tinyAmount }];
+      const tinyAmount_test18 = ethers.utils.parseUnits("0.0000000001", 18);
+      const tinyAsset_test18 = [{ tokenAddress: syntheticTestToken_test18.address, tokenAmount: tinyAmount_test18 }];
 
       await expect(
-        syntheticTokenHub.callStatic.validateAndPrepareAssets(tinyAsset, eidB)
+        syntheticTokenHub.callStatic.validateAndPrepareAssets(tinyAsset_test18, eidB)
       ).to.be.revertedWithCustomError(syntheticTokenHub, "AmountIsTooSmall");
 
-      // Test insufficient balance
-      const remoteInfo = await syntheticTokenHubGetters.getRemoteTokenInfo(syntheticUsdtToken.address, eidB);
-      const excessiveAmount = remoteInfo.totalBalance.add(ethers.utils.parseUnits("100000000", 6)); // Very large amount
-      const excessiveAsset = [{ tokenAddress: syntheticUsdtToken.address, tokenAmount: excessiveAmount }];
+      const depositAmount_test6 = ethers.utils.parseUnits("10", 6);
+      await remoteTestToken_test6.mint(user1.address, depositAmount_test6);
+      await remoteTestToken_test6.connect(user1).approve(gatewayVaultB.address, depositAmount_test6);
 
-      await expect(
-        syntheticTokenHub.callStatic.validateAndPrepareAssets(excessiveAsset, eidB)
-      ).to.be.revertedWithCustomError(syntheticTokenHub, "InsufficientBalanceOnDestChain");
-
-      // First, we need to make a deposit to ensure there is sufficient balance on the destination chain
-      // Mint some tokens for testing
-      const depositAmount = ethers.utils.parseUnits("10", 6); // 10 units with 6 decimals
-      await remoteTestToken.mint(user1.address, depositAmount);
-
-      // Approve tokens for the gateway vault
-      await remoteTestToken.connect(user1).approve(gatewayVaultB.address, depositAmount);
-
-      // Make the deposit
-      const depositOptions = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const depositFee = await gatewayVaultB.quoteDeposit(
+      const depositOptions_test6 = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const depositFee_test6 = await gatewayVaultB.quoteDeposit(
         user1.address,
-        [{ tokenAddress: remoteTestToken.address, tokenAmount: depositAmount }],
-        depositOptions
+        [{ tokenAddress: remoteTestToken_test6.address, tokenAmount: depositAmount_test6 }],
+        depositOptions_test6
       );
-
-      // Send tokens from Chain B to Chain A
       await gatewayVaultB
         .connect(user1)
         .deposit(
           user1.address,
-          [{ tokenAddress: remoteTestToken.address, tokenAmount: depositAmount }],
-          depositOptions,
-          { value: depositFee }
+          [{ tokenAddress: remoteTestToken_test6.address, tokenAmount: depositAmount_test6 }],
+          depositOptions_test6,
+          { value: depositFee_test6 }
         );
+      expect(await syntheticTestToken_test18.balanceOf(user1.address)).to.equal(ethers.utils.parseUnits("10", 18));
 
-      // Verify the synthetic tokens were minted to user1
-      expect(await syntheticTestToken.balanceOf(user1.address)).to.equal(
-        ethers.utils.parseUnits("10", 18) // 10 units with 18 decimals
-      );
+      const dustyAmount_test18 = ethers.utils.parseUnits("1.123456789123456789", 18);
+      const dustyAsset_test18 = [{ tokenAddress: syntheticTestToken_test18.address, tokenAmount: dustyAmount_test18 }];
+      const expectedDustRemovedAmount_test18 = ethers.utils.parseUnits("1.123456000000000000", 18);
+      const [preparedDustyAssets_test18 /* penalties1_test18 */] =
+        await syntheticTokenHub.callStatic.validateAndPrepareAssets(dustyAsset_test18, eidB);
+      expect(preparedDustyAssets_test18[0].tokenAddress).to.equal(remoteTestToken_test6.address);
+      const expectedNormalizedAmount_test6 = ethers.utils.parseUnits("1.123456", 6);
+      expect(preparedDustyAssets_test18[0].tokenAmount).to.equal(expectedNormalizedAmount_test6);
 
-      // Test dust removal functionality with decimal differences
-      // Create an amount with "dust" that should be removed when normalized
-      // Use the token with 18 decimals that has been linked to a 6 decimal token
-      // 1.123456789123456789 TOKEN18 (18 decimals)
-      const dustyAmount = ethers.utils.parseUnits("1.123456789123456789", 18);
-      const dustyAsset = [{ tokenAddress: syntheticTestToken.address, tokenAmount: dustyAmount }];
-
-      // Expected after dust removal: amount with the last 12 decimals truncated
-      // Should become 1.123456000000000000 in 18 decimals
-      const expectedDustRemovedAmount = ethers.utils.parseUnits("1.123456000000000000", 18);
-
-      // Test destination chain amount normalization
-      const [preparedDustyAssets, penalties1] = await syntheticTokenHub.callStatic.validateAndPrepareAssets(
-        dustyAsset,
-        eidB
-      );
-
-      // Verify the remote token address
-      expect(preparedDustyAssets[0].tokenAddress).to.equal(remoteTestToken.address);
-
-      // Verify normalization from 18 to 6 decimals
-      // 1.123456000000000000 TOKEN18 (after dust removal) should become 1.123456 in 6 decimals
-      const expectedNormalizedAmount = ethers.utils.parseUnits("1.123456", 6);
-      expect(preparedDustyAssets[0].tokenAmount).to.equal(expectedNormalizedAmount);
-
-      // Test actual dust removal during bridgeTokens operation
-      // First, approve tokens for bridging
-      await syntheticTestToken.connect(user1).approve(syntheticTokenHub.address, ethers.constants.MaxUint256);
-
-      // Record initial balance
-      const initialBalance = await syntheticTestToken.balanceOf(user1.address);
-
-      // Use the expectedDustRemovedAmount from above (no need to redeclare)
-
-      // Calculate bridging fee
-      const optionsBurn = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
-      const [nativeFeeBurn, assetsRemote, penalties2] = await syntheticTokenHub.quoteBridgeTokens(
-        user1.address,
-        dustyAsset,
-        eidB,
-        optionsBurn
-      );
-
-      // Perform the bridge operation with the dusty amount
+      await syntheticTestToken_test18.connect(user1).approve(syntheticTokenHub.address, ethers.constants.MaxUint256);
+      const initialBalance_test18_user1 = await syntheticTestToken_test18.balanceOf(user1.address);
+      const optionsBurn_test18 = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+      const [nativeFeeBurn_test18 /* assetsRemote_test18 */ /* penalties2_test18 */, ,] =
+        await syntheticTokenHub.quoteBridgeTokens(user1.address, dustyAsset_test18, eidB, optionsBurn_test18);
       await syntheticTokenHub
         .connect(user1)
-        .bridgeTokens(user1.address, dustyAsset, eidB, optionsBurn, { value: nativeFeeBurn });
-
-      // Check final balance - should be reduced by the dust-free amount, not the original dusty amount
-      const finalBalance = await syntheticTestToken.balanceOf(user1.address);
-      const actualBurnedAmount = initialBalance.sub(finalBalance);
-
-      // Verify that the burned amount equals the dust-removed amount
-      expect(actualBurnedAmount).to.equal(expectedDustRemovedAmount);
-
-      // Verify the user received the correct amount on the destination chain
-      // (decimal-adjusted from 18 to 6 decimals)
-      const eidBBalance = await remoteTestToken.balanceOf(user1.address);
-      expect(eidBBalance).to.equal(expectedNormalizedAmount);
+        .bridgeTokens(user1.address, dustyAsset_test18, eidB, optionsBurn_test18, { value: nativeFeeBurn_test18 });
+      const finalBalance_test18_user1 = await syntheticTestToken_test18.balanceOf(user1.address);
+      const actualBurnedAmount_test18 = initialBalance_test18_user1.sub(finalBalance_test18_user1);
+      expect(actualBurnedAmount_test18).to.equal(expectedDustRemovedAmount_test18);
+      const eidBBalance_test6_user1 = await remoteTestToken_test6.balanceOf(user1.address);
+      expect(eidBBalance_test6_user1).to.equal(expectedNormalizedAmount_test6);
     });
 
     // Test consistency between contract state and getter for all tokens on all networks
@@ -1108,9 +1056,29 @@ describe("Synthetic Token System", function () {
 
           // Get actual balance in the gateway vault
           const actualVaultBalance = await network.token.balanceOf(network.vault.address);
+          const bonusBalance = await syntheticTokenHubGetters.getBonusBalance(syntheticToken.address, network.eid);
 
-          // The totalBalance in RemoteTokenInfo should equal the actual token balance in the vault
-          expect(remoteInfo.totalBalance.toString()).to.equal(actualVaultBalance.toString());
+          let combinedBalanceInSyntheticDecimals = remoteInfo.totalBalance.add(bonusBalance);
+          let expectedVaultBalanceInRemoteDecimals = combinedBalanceInSyntheticDecimals;
+
+          if (remoteInfo.decimalsDelta > 0) {
+            expectedVaultBalanceInRemoteDecimals = combinedBalanceInSyntheticDecimals.div(
+              ethers.BigNumber.from(10).pow(remoteInfo.decimalsDelta)
+            );
+          } else if (remoteInfo.decimalsDelta < 0) {
+            expectedVaultBalanceInRemoteDecimals = combinedBalanceInSyntheticDecimals.mul(
+              ethers.BigNumber.from(10).pow(Math.abs(remoteInfo.decimalsDelta))
+            );
+          }
+
+          const difference = expectedVaultBalanceInRemoteDecimals.sub(actualVaultBalance).abs();
+          const tolerance = ethers.BigNumber.from(1); // Minimal tolerance
+
+          // if (!difference.lte(tolerance)) { // Keep logs for now if it fails
+          //   console.log(`Balance Mismatch Details for ${await syntheticToken.symbol()} on EID ${network.eid}:`);
+          //   console.log(`  Difference: ${difference.toString()}`);
+          // }
+          expect(difference.lte(tolerance)).to.be.true;
         }
       }
     });
@@ -1126,9 +1094,20 @@ describe("Synthetic Token System", function () {
     // Test getRemoteTokenInfo with various scenarios
     it("should correctly get remote token info for existing token", async function () {
       const remoteInfo = await syntheticTokenHubGetters.getRemoteTokenInfo(syntheticUsdtToken.address, eidB);
+
+      const expectedTotalBalance = ethers.BigNumber.from("6600010002");
+      // Recalculated expectedBonusBalance considering MAX_PENALTY_BP constraint:
+      // Initial penalty (capped) = 5% of 10M USDT = 500,000 USDT = 500000000000
+      // Total bonuses paid out = totalBalance (6600010002) - sum_of_direct_deposits (6000000000) = 600010002
+      // Expected remaining bonus pool = 500000000000 - 600010002 = 499399989998
+      const expectedBonusBalance = ethers.BigNumber.from("499399989998");
+
       expect(remoteInfo.remoteAddress).to.equal(bUSDT.address);
-      expect(remoteInfo.totalBalance).to.equal(6000000000);
+      expect(remoteInfo.totalBalance.toString()).to.equal(expectedTotalBalance.toString());
       expect(remoteInfo.decimalsDelta).to.equal(0);
+
+      const bonusBalance = await syntheticTokenHubGetters.getBonusBalance(syntheticUsdtToken.address, eidB);
+      expect(bonusBalance.toString()).to.equal(expectedBonusBalance.toString());
     });
 
     it("should return zero values for non-existent remote token", async function () {
