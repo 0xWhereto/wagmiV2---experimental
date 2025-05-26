@@ -10,6 +10,8 @@ import { OAppOptionsType3 } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OA
 import { ISyntheticToken } from "./interfaces/ISyntheticToken.sol";
 import { SyntheticToken } from "./SyntheticToken.sol";
 import { OptionsBuilder } from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OptionsBuilder.sol";
+import { IBalancer } from "./interfaces/IBalancer.sol";
+import { MessageType, Asset, SwapParams, AvailableToken } from "./interfaces/ICommonStructs.sol";
 
 // import { console } from "hardhat/console.sol";
 
@@ -22,170 +24,171 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     using TransferHelper for address;
     using OptionsBuilder for bytes;
 
-    enum MessageType {
-        Deposit,
-        Withdraw,
-        Swap,
-        LinkToken,
-        RevertSwap
-    }
-
-    struct SwapParams {
-        address from;
-        address to;
-        address syntheticTokenOut;
-        uint128 gasLimit;
-        uint32 dstEid;
-        uint256 value;
-        Asset[] assets;
-        bytes commands;
-        bytes[] inputs;
-    }
-
-    struct AvailableToken {
-        bool onPause;
-        address tokenAddress;
-        address syntheticTokenAddress;
-        int8 decimalsDelta;
-    }
-
-    struct Asset {
-        address tokenAddress;
-        uint256 tokenAmount;
-    }
-
+    /**
+     * @dev Represents an asset entry with token index and amount.
+     */
     struct AssetEntry {
-        uint256 tokenIndex;
-        uint256 tokenAmount;
+        uint256 tokenIndex; // Index of the token
+        uint256 tokenAmount; // Amount of the token
     }
 
+    /**
+     * @dev Stores information about a synthetic token.
+     */
     struct SyntheticTokenInfo {
-        address tokenAddress;
-        string tokenSymbol;
-        uint8 tokenDecimals;
-        uint32[] chainList; // List of supported chains for iteration
+        address tokenAddress; // Address of the synthetic token contract
+        string tokenSymbol; // Symbol of the synthetic token
+        uint8 tokenDecimals; // Decimals of the synthetic token
+        uint32[] chainList; // List of supported chains for this synthetic token
     }
 
+    /**
+     * @dev Stores information about a remote token linked to a synthetic token.
+     */
     struct RemoteTokenInfo {
-        address remoteAddress;
-        uint256 totalBalance;
-        int8 decimalsDelta;
+        address remoteAddress; // Address of the token on the remote chain
+        int8 decimalsDelta; // Difference in decimals between the synthetic token and the remote token
+        uint256 totalBalance; // Total balance of this token on the remote chain, from the perspective of this hub
     }
 
-    struct RemoteTokenView {
-        uint32 eid;
-        RemoteTokenInfo remoteTokenInfo;
-    }
-
-    struct SyntheticTokenView {
-        uint256 tokenIndex;
-        SyntheticTokenInfo syntheticTokenInfo;
-        RemoteTokenView[] remoteTokens;
-    }
-
-    address public immutable uniswapUniversalRouter;
-    address public immutable uniswapPermitV2;
+    address public immutable uniswapUniversalRouter; // Address of the Uniswap Universal Router
+    address public immutable uniswapPermitV2; // Address of the Uniswap Permit2 contract
+    address public balancer; // Address of the Balancer contract for penalty/bonus calculations
 
     // Synthetic tokens registry
-    mapping(uint256 => SyntheticTokenInfo) public syntheticTokens;
-    mapping(address => mapping(uint32 => RemoteTokenInfo)) public remoteTokens; // token address => eid => RemoteTokenInfo
-    uint256 public syntheticTokenCount;
+    // @dev Mapping from token index to synthetic token information.
+    mapping(uint256 => SyntheticTokenInfo) private _syntheticTokens;
+    // @dev Mapping from local synthetic token address to its remote token information per endpoint ID (eid).
+    mapping(address => mapping(uint32 => RemoteTokenInfo)) private _remoteTokens; // token address => eid => RemoteTokenInfo
+    uint256 private _syntheticTokenCount; // Counter for the number of synthetic tokens created
 
     // Mapping for token lookup: tokenAddress => tokenIndex + 1 (0 means not found)
+    // @dev Mapping from synthetic token address to its index.
     mapping(address => uint256) private _tokenIndexByAddress;
 
     // Mapping for token lookup by network and remote address
-    mapping(uint32 => mapping(address => address)) public syntheticAddressByRemoteAddress; // eid => remote address => token address
+    // @dev Mapping from endpoint ID (eid) and remote token address to the corresponding local synthetic token address.
+    mapping(uint32 => mapping(address => address)) private _syntheticAddressByRemoteAddress; // eid => remote address => token address
     // Mapping for token lookup by network and synthetic address
-    mapping(uint32 => mapping(address => address)) public remoteAddressBySyntheticAddress; // eid => token address => remote address
-    mapping(uint32 => address) public gatewayVaultByEid; // eid => gateway vault address
+    // @dev Mapping from endpoint ID (eid) and local synthetic token address to the corresponding remote token address.
+    mapping(uint32 => mapping(address => address)) private _remoteAddressBySyntheticAddress; // eid => token address => remote address
+    // @dev Mapping from endpoint ID (eid) to the GatewayVault contract address on that chain.
+    mapping(uint32 => address) private _gatewayVaultByEid; // eid => gateway vault address
+    // @dev Mapping from synthetic token address and endpoint ID (eid) to the bonus balance accumulated.
+    mapping(address => mapping(uint32 => uint256)) private _bonusBalance; // token address => eid => bonus balance
 
     // Add constant for the base token name
-    string public constant TOKEN_NAME_PREFIX = "Synthetic ";
+    string public constant TOKEN_NAME_PREFIX = "Synthetic "; // Prefix for synthetic token names
+    uint256 public constant MAX_PENALTY_BP = 500; // Maximum penalty in basis points (5%)
+    uint256 public constant BP = 10000; // Basis points denominator
 
     // Events
+    /**
+     * @dev Emitted when a new synthetic token is added.
+     * @param tokenIndex The index of the newly added synthetic token.
+     * @param tokenAddress The address of the newly added synthetic token.
+     * @param symbol The symbol of the newly added synthetic token.
+     * @param decimals The decimals of the newly added synthetic token.
+     */
     event SyntheticTokenAdded(
         uint256 indexed tokenIndex,
         address tokenAddress,
         string symbol,
         uint8 decimals
     );
+    /**
+     * @dev Emitted when remote tokens are linked to synthetic tokens.
+     * @param availableTokens Array of available tokens that were linked.
+     * @param gatewayVault The address of the GatewayVault contract on the remote chain.
+     * @param eid The endpoint ID of the remote chain.
+     */
     event RemoteTokenLinked(AvailableToken[] availableTokens, address gatewayVault, uint32 eid);
+    /**
+     * @dev Emitted when synthetic tokens are minted.
+     * @param tokenIndex The index of the synthetic token minted.
+     * @param recipient The address that received the minted tokens.
+     * @param amount The amount of tokens minted.
+     * @param sourceEid The endpoint ID of the source chain from which the deposit originated.
+     */
     event TokenMinted(
         uint256 indexed tokenIndex,
         address recipient,
         uint256 amount,
         uint32 sourceEid
     );
+    /**
+     * @dev Emitted when synthetic tokens are burned for bridging.
+     * @param dstEid The destination endpoint ID.
+     * @param assets Array of assets (token addresses and amounts) that were burned.
+     */
     event TokenBurned(uint32 dstEid, Asset[] assets);
-    event MessageSent(uint32 dstEid, bytes32 guid, address from, address to, Asset[] assets);
+    /**
+     * @dev Emitted when a LayerZero message is sent.
+     * @param dstEid The destination endpoint ID.
+     * @param guid The LayerZero message GUID.
+     * @param from The address initiating the message.
+     * @param to The recipient address on the destination chain.
+     * @param assets Array of assets being transferred.
+     * @param penalties Array of penalties applied to each asset.
+     */
+    event MessageSent(
+        uint32 dstEid,
+        bytes32 guid,
+        address from,
+        address to,
+        Asset[] assets,
+        uint256[] penalties
+    );
+    /**
+     * @dev Emitted when a LayerZero message is received and processed.
+     * @param guid The LayerZero message GUID.
+     * @param from The original sender address from the source chain.
+     * @param to The recipient address on the current chain.
+     * @param assets Array of assets received.
+     * @param srcEid The source endpoint ID from which the message originated.
+     */
     event MessageReceived(bytes32 guid, address from, address to, Asset[] assets, uint32 srcEid);
 
     constructor(
         address _endpoint,
         address _owner,
         address _uniswapUniversalRouter,
-        address _uniswapPermitV2
+        address _uniswapPermitV2,
+        address _balancer
     ) OApp(_endpoint, _owner) Ownable(_owner) {
         uniswapUniversalRouter = _uniswapUniversalRouter;
         uniswapPermitV2 = _uniswapPermitV2;
+        balancer = _balancer;
     }
+
+    // Custom Errors
+    error Permit2ApprovalFailed();
+    error SyntheticTokenNotFound();
+    error RemoteTokenAlreadyLinked(
+        address syntheticToken,
+        uint32 eid,
+        address attemptedRemoteToken
+    );
+    error InvalidLzReceiveSender(address actualSender, address expectedSender);
+    error InvalidMessageType();
+    error InsufficientValue(uint256 provided, uint256 required);
+    error TokenNotLinkedToDestChain(address syntheticToken, uint32 dstEid);
+    error AmountIsTooSmall();
+    error InsufficientBalanceOnDestChain(
+        address syntheticToken,
+        uint32 dstEid,
+        uint256 amountRequired,
+        uint256 currentBalance
+    );
+    error InvalidSwapSender();
+    error SwapFailed(string reason);
 
     /**
-     * @notice Gets information about all synthetic tokens
-     * @return Array of data for all tokens
+     * @notice Sets the balancer address
+     * @param _balancer Balancer address
      */
-    function getSyntheticTokensInfo(
-        uint256[] memory _tokenIndices
-    ) public view returns (SyntheticTokenView[] memory) {
-        uint256 length = _tokenIndices.length > 0 ? _tokenIndices.length : syntheticTokenCount;
-        SyntheticTokenView[] memory tokens = new SyntheticTokenView[](length);
-        if (_tokenIndices.length == 0) {
-            for (uint256 i = 0; i < length; i++) {
-                tokens[i] = getSyntheticTokenInfo(i + 1);
-            }
-        } else {
-            for (uint256 i = 0; i < length; i++) {
-                tokens[i] = getSyntheticTokenInfo(_tokenIndices[i]);
-            }
-        }
-        return tokens;
-    }
-
-    function getSyntheticTokenInfo(
-        uint256 _tokenIndex
-    ) public view returns (SyntheticTokenView memory) {
-        SyntheticTokenInfo memory tokenInfo = syntheticTokens[_tokenIndex];
-        address syntheticTokenAddress = tokenInfo.tokenAddress;
-        uint256 chainListLength = tokenInfo.chainList.length;
-
-        RemoteTokenView[] memory _remoteTokens = new RemoteTokenView[](chainListLength);
-        uint32[] memory supportedChainsList = new uint32[](chainListLength);
-        for (uint256 j = 0; j < chainListLength; j++) {
-            uint32 eid = tokenInfo.chainList[j];
-            RemoteTokenInfo memory remoteToken = remoteTokens[syntheticTokenAddress][eid];
-            _remoteTokens[j] = RemoteTokenView({
-                eid: eid,
-                remoteTokenInfo: RemoteTokenInfo({
-                    remoteAddress: remoteToken.remoteAddress,
-                    totalBalance: remoteToken.totalBalance,
-                    decimalsDelta: remoteToken.decimalsDelta
-                })
-            });
-            supportedChainsList[j] = eid;
-        }
-
-        return
-            SyntheticTokenView({
-                tokenIndex: _tokenIndex,
-                syntheticTokenInfo: SyntheticTokenInfo({
-                    tokenAddress: syntheticTokenAddress,
-                    tokenSymbol: tokenInfo.tokenSymbol,
-                    tokenDecimals: tokenInfo.tokenDecimals,
-                    chainList: supportedChainsList
-                }),
-                remoteTokens: _remoteTokens
-            });
+    function setBalancer(address _balancer) external onlyOwner {
+        balancer = _balancer;
     }
 
     /**
@@ -198,8 +201,8 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         string memory tokenName = string(abi.encodePacked(TOKEN_NAME_PREFIX, _symbol));
 
         // Create token (hub will automatically be the owner)
-        syntheticTokenCount++;
-        uint256 tokenIndex = syntheticTokenCount;
+        ++_syntheticTokenCount;
+        uint256 tokenIndex = _syntheticTokenCount;
         SyntheticToken syntheticToken = new SyntheticToken(
             tokenName,
             _symbol,
@@ -208,7 +211,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         );
         address tokenAddress = address(syntheticToken);
 
-        SyntheticTokenInfo storage tokenInfo = syntheticTokens[tokenIndex];
+        SyntheticTokenInfo storage tokenInfo = _syntheticTokens[tokenIndex];
         tokenInfo.tokenAddress = tokenAddress;
         tokenInfo.tokenSymbol = _symbol;
         tokenInfo.tokenDecimals = _decimals;
@@ -218,9 +221,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
 
         tokenAddress.safeApprove(uniswapPermitV2, type(uint256).max);
 
-        string memory errorMessage;
-
-        (bool success, bytes memory returndata) = uniswapPermitV2.call(
+        (bool success, ) = uniswapPermitV2.call(
             abi.encodeWithSignature(
                 "approve(address,address,uint160,uint48)",
                 tokenAddress,
@@ -230,7 +231,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             )
         );
         if (!success) {
-            errorMessage = returndata.length > 0 ? string(returndata) : "PERMIT2_APPROVE_FAILED";
+            revert Permit2ApprovalFailed();
         }
 
         emit SyntheticTokenAdded(tokenIndex, tokenAddress, _symbol, _decimals);
@@ -250,12 +251,14 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         bytes calldata _options
     ) external payable returns (MessagingReceipt memory receipt) {
         // Validate and prepare assets (view operation)
-        (Asset[] memory assetsRemote, string memory errorMessage) = _validateAndPrepareAssets(
+        (Asset[] memory assetsRemote, uint256[] memory penalties) = validateAndPrepareAssets(
             _assets,
             _dstEid
         );
-        if (bytes(errorMessage).length > 0) {
-            revert(errorMessage);
+
+        for (uint256 i = 0; i < assetsRemote.length; i++) {
+            address syntheticTokenAddress = _assets[i].tokenAddress;
+            _bonusBalance[syntheticTokenAddress][_dstEid] += penalties[i];
         }
 
         // Burn tokens and update balances (state-changing operation)
@@ -274,7 +277,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             payable(msg.sender)
         );
 
-        emit MessageSent(_dstEid, receipt.guid, msg.sender, _recipient, _assets);
+        emit MessageSent(_dstEid, receipt.guid, msg.sender, _recipient, _assets, penalties);
 
         return receipt;
     }
@@ -286,26 +289,37 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
      * @param _dstEid Destination network
      * @param _options LayerZero transaction options
      * @return nativeFee Cost in native currency
+     * @return assetsRemote Array of assets to send
+     * @return penalties Array of penalties
      */
     function quoteBridgeTokens(
         address _recipient,
         Asset[] memory _assets,
         uint32 _dstEid,
         bytes calldata _options
-    ) public view returns (uint256 nativeFee) {
-        // Use the view function to validate and prepare assets
-        (Asset[] memory assetsRemote, string memory errorMessage) = _validateAndPrepareAssets(
-            _assets,
-            _dstEid
-        );
-        if (bytes(errorMessage).length > 0) {
-            revert(errorMessage);
-        }
+    )
+        public
+        view
+        returns (uint256 nativeFee, Asset[] memory assetsRemote, uint256[] memory penalties)
+    {
+        (assetsRemote, penalties) = validateAndPrepareAssets(_assets, _dstEid);
+
         bytes memory msgData = abi.encode(_recipient, _recipient, assetsRemote);
         bytes memory payload = abi.encode(MessageType.Withdraw, msgData);
         nativeFee = (_quote(_dstEid, payload, _options, false)).nativeFee;
     }
 
+    /**
+     * @notice Quotes the LayerZero messaging fee for a swap operation.
+     * @dev This function estimates the fee required for both the swap execution message and a potential revert message.
+     * @param _recipient The final recipient address on the destination chain.
+     * @param _assetsIn Array of assets being swapped in on the source chain.
+     * @param syntheticTokenOut The synthetic token being swapped out on this hub (destination of swap).
+     * @param srcEid The source endpoint ID where the swap originates.
+     * @param dstEid The destination endpoint ID where the swapped tokens are sent after processing on this hub.
+     * @param options LayerZero messaging options.
+     * @return The maximum of the fee for the swap message and the revert message.
+     */
     function quoteSwap(
         address _recipient,
         Asset[] calldata _assetsIn,
@@ -316,67 +330,122 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     ) public view returns (uint256) {
         bytes32 _guid = bytes32(uint256(uint160(_recipient)));
 
+        // Prepare payload for a potential revert message
         bytes memory msgDataRevert = abi.encode(
-            _recipient,
-            _recipient,
+            _recipient, // from
+            _recipient, // to
             _assetsIn,
             _guid,
-            "THIS_IS_FAKE_ERROR_MESSAGE"
+            "THIS_IS_FAKE_ERROR_MESSAGE" // Mock error message
         );
         bytes memory payloadRevert = abi.encode(MessageType.RevertSwap, msgDataRevert);
+
+        // Prepare payload for the swap message
         Asset[] memory _assetsOut = new Asset[](1);
-        _assetsOut[0] = Asset({ tokenAddress: syntheticTokenOut, tokenAmount: 1 });
-        bytes memory msgDataSwap = abi.encode(_recipient, _recipient, _assetsOut);
+        _assetsOut[0] = Asset({ tokenAddress: syntheticTokenOut, tokenAmount: 1 }); // Mock amount, actual amount determined during swap
+        bytes memory msgDataSwap = abi.encode(_recipient, _recipient, _assetsOut); // Note: _recipient is used twice as per original logic
         bytes memory payloadSwap = abi.encode(MessageType.Swap, msgDataSwap);
 
+        // Quote fees for both scenarios
         uint256 feeRevert = (_quote(dstEid, payloadRevert, options, false)).nativeFee;
-        uint256 feeSwap = (_quote(srcEid, payloadSwap, options, false)).nativeFee;
-        return feeRevert > feeSwap ? feeRevert : feeSwap;
-    }
-
-    function validateAndPrepareAssets(
-        Asset[] memory _assets,
-        uint32 _dstEid
-    ) private view returns (Asset[] memory assets, string memory errorMessage) {
-        return _validateAndPrepareAssets(_assets, _dstEid);
+        uint256 feeSwap = (_quote(srcEid, payloadSwap, options, false)).nativeFee; // Fee for message from hub to srcEid for swap execution
+        return feeRevert > feeSwap ? feeRevert : feeSwap; // Return the higher fee
     }
 
     /**
-     * @dev Validates tokens and prepares asset array
-     * @param _assets Array of token indices and amounts
-     * @param _dstEid Destination network identifier
-     * @return assets Array of prepared assets
+     * @notice Calculates potential bonuses for a batch of assets from a source chain.
+     * @param _assets Array of assets from the source chain (remote token addresses and amounts).
+     * @param _srcEid The source network identifier.
+     * @return bonuses Array of bonus amounts for each asset.
      */
-    function _validateAndPrepareAssets(
+    function calculateBonuses(
+        Asset[] memory _assets,
+        uint32 _srcEid
+    ) external view returns (uint256[] memory bonuses) {
+        uint256 length = _assets.length;
+        bonuses = new uint256[](length);
+        for (uint256 i = 0; i < length; i++) {
+            Asset memory asset = _assets[i];
+            address syntheticTokenAddress = _syntheticAddressByRemoteAddress[_srcEid][
+                asset.tokenAddress
+            ];
+            if (syntheticTokenAddress == address(0)) {
+                revert SyntheticTokenNotFound();
+            }
+            RemoteTokenInfo memory remoteToken = _remoteTokens[syntheticTokenAddress][_srcEid]; // Read into memory
+
+            uint256 normalizedAmountIn = _normalizeAmount(
+                asset.tokenAmount,
+                remoteToken.decimalsDelta
+            );
+            bonuses[i] = _checkBonus(
+                syntheticTokenAddress,
+                _srcEid,
+                normalizedAmountIn,
+                remoteToken.totalBalance
+            );
+        }
+        return bonuses;
+    }
+
+    /**
+     * @dev Validates tokens and prepares asset array for bridging.
+     * It checks if tokens are linked, if there's sufficient balance on the destination chain,
+     * removes dust, and calculates penalties.
+     * @param _assets Array of assets (local synthetic token addresses and amounts) to be bridged.
+     * @param _dstEid Destination network identifier.
+     * @return assets Array of prepared assets with remote token addresses and normalized amounts.
+     * @return penalties Array of penalties calculated for each asset.
+     */
+    function validateAndPrepareAssets(
         Asset[] memory _assets,
         uint32 _dstEid
-    ) private view returns (Asset[] memory assets, string memory errorMessage) {
+    ) public view returns (Asset[] memory assets, uint256[] memory penalties) {
         uint256 inputLength = _assets.length;
         assets = new Asset[](inputLength);
+        penalties = new uint256[](inputLength);
 
         for (uint256 i = 0; i < inputLength; i++) {
             Asset memory _asset = _assets[i];
             address syntheticTokenAddress = _asset.tokenAddress;
             uint256 amount = _asset.tokenAmount;
 
-            RemoteTokenInfo memory remoteToken = remoteTokens[syntheticTokenAddress][_dstEid];
+            RemoteTokenInfo memory remoteToken = _remoteTokens[syntheticTokenAddress][_dstEid];
             if (remoteToken.remoteAddress == address(0)) {
-                errorMessage = "TOKEN_NOT_FOUND_ON_DST_CHAIN";
-                return (assets, errorMessage);
+                revert TokenNotLinkedToDestChain(syntheticTokenAddress, _dstEid);
             }
 
             amount = _removeDust(amount, -remoteToken.decimalsDelta);
             _assets[i].tokenAmount = amount; // update amount
-
             if (amount == 0) {
-                errorMessage = "AMOUNT_IS_TOO_SMALL";
-                return (assets, errorMessage);
+                revert AmountIsTooSmall();
             }
+            // Check balance against the amount *after* dust removal, as this is what would be burned/affect balance
             if (remoteToken.totalBalance < amount) {
-                errorMessage = "INSUFFICIENT_BALANCE_ON_DST_CHAIN";
-                return (assets, errorMessage);
+                revert InsufficientBalanceOnDestChain(
+                    syntheticTokenAddress,
+                    _dstEid,
+                    amount,
+                    remoteToken.totalBalance
+                );
             }
 
+            uint256 penalty = _checkPenalty(
+                syntheticTokenAddress,
+                _dstEid,
+                amount,
+                remoteToken.totalBalance
+            );
+
+            if (penalty > 0) {
+                amount -= penalty;
+                amount = _removeDust(amount, -remoteToken.decimalsDelta);
+                penalties[i] = _assets[i].tokenAmount - amount;
+            } else {
+                penalties[i] = 0;
+            }
+
+            // For the message payload, use the normalized amount
             uint256 normalizedAmount = _normalizeAmount(amount, -remoteToken.decimalsDelta);
 
             assets[i] = Asset({
@@ -387,16 +456,101 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     }
 
     /**
-     * @dev Burns tokens and updates balances (without repeating validation)
-     * @param _assets Array of token indices and amounts
-     * @param _dstEid Destination network identifier
+     * @notice Processes a swap message received from a remote chain via LayerZero.
+     * @dev This function is called internally by `_lzReceive` when a `MessageType.Swap` is received.
+     * It mints incoming synthetic tokens, executes a swap on Uniswap, burns the resulting synthetic tokens,
+     * and prepares a message to send the swapped assets to the final destination chain.
+     * If the swap fails, it prepares a revert message.
+     * @param params The swap parameters including assets, recipient, destination EID, etc.
+     * @param _srcEid The source endpoint ID from which the swap message originated.
+     * @return payload The encoded LayerZero message payload to be sent (either a swap confirmation or a revert message).
+     */
+    function processSwapMessage(
+        SwapParams memory params,
+        uint32 _srcEid
+    ) external returns (bytes memory payload) {
+        if (msg.sender != address(this)) revert InvalidSwapSender();
+        address[] memory syntheticTokensIn = new address[](params.assets.length);
+
+        uint256 length = params.assets.length;
+        for (uint256 i = 0; i < length; i++) {
+            Asset memory asset = params.assets[i];
+            address syntheticTokenAddress = _syntheticAddressByRemoteAddress[_srcEid][
+                asset.tokenAddress
+            ];
+            if (syntheticTokenAddress == address(0)) revert SyntheticTokenNotFound();
+            syntheticTokensIn[i] = syntheticTokenAddress;
+            RemoteTokenInfo storage remoteToken = _remoteTokens[syntheticTokenAddress][_srcEid];
+
+            // Normalize amount
+            uint256 normalizedAmount = _normalizeAmount(
+                asset.tokenAmount,
+                remoteToken.decimalsDelta
+            );
+
+            uint256 bonus = _checkBonus(
+                syntheticTokenAddress,
+                _srcEid,
+                normalizedAmount,
+                remoteToken.totalBalance
+            );
+            _bonusBalance[syntheticTokenAddress][_srcEid] -= bonus;
+            // Add bonus
+            normalizedAmount += bonus;
+
+            // Increase source network balance
+            remoteToken.totalBalance += normalizedAmount;
+
+            // Mint synthetic token
+            ISyntheticToken(syntheticTokenAddress).mint(address(this), normalizedAmount);
+        }
+
+        (bool success, bytes memory returndata) = uniswapUniversalRouter.call(
+            abi.encodeWithSignature("execute(bytes,bytes[])", params.commands, params.inputs)
+        );
+
+        if (success) {
+            Asset[] memory assetsToBurn = new Asset[](1);
+            assetsToBurn[0] = Asset({
+                tokenAddress: params.syntheticTokenOut,
+                tokenAmount: ISyntheticToken(params.syntheticTokenOut).balanceOf(address(this))
+            });
+            // If validateAndPrepareAssets fails, it will revert.
+            (Asset[] memory assetsToSend, uint256[] memory penalties) = validateAndPrepareAssets(
+                assetsToBurn,
+                params.dstEid
+            );
+            if (assetsToSend[0].tokenAmount < params.minimumAmountOut) {
+                revert SwapFailed("Insufficient amount out");
+            }
+
+            _bonusBalance[params.syntheticTokenOut][params.dstEid] += penalties[0]; // only one asset in assetsToBurn
+
+            _burnTokens(assetsToBurn, params.dstEid, address(this)); // Assumes assetsToBurn amounts are correct for burning logic
+            bytes memory msgData = abi.encode(params.from, params.to, assetsToSend);
+            payload = abi.encode(MessageType.Swap, msgData);
+        } else {
+            revert SwapFailed(
+                returndata.length > 0 ? string(returndata) : "Uniswap execution failed"
+            );
+        }
+        _collectDust(syntheticTokensIn, params.syntheticTokenOut, params.from);
+        return payload;
+    }
+
+    /**
+     * @dev Burns synthetic tokens and updates the total balance for the destination chain.
+     * This function is called internally after validations and penalty calculations.
+     * @param _assets Array of assets (local synthetic token addresses and amounts) to burn.
+     * @param _dstEid Destination network identifier for which to update the balance.
+     * @param from The address from which the tokens are burned (original owner or this contract for swaps).
      */
     function _burnTokens(Asset[] memory _assets, uint32 _dstEid, address from) private {
         for (uint256 i = 0; i < _assets.length; i++) {
             Asset memory _asset = _assets[i];
             address syntheticTokenAddress = _asset.tokenAddress;
             uint256 amount = _asset.tokenAmount;
-            RemoteTokenInfo storage remoteToken = remoteTokens[syntheticTokenAddress][_dstEid];
+            RemoteTokenInfo storage remoteToken = _remoteTokens[syntheticTokenAddress][_dstEid];
             // Burn the synthetic token
             ISyntheticToken(syntheticTokenAddress).burn(from, amount);
 
@@ -406,7 +560,11 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     }
 
     /**
-     * @dev Processes incoming LayerZero message
+     * @dev Internal LayerZero message receiving function.
+     * Routes messages based on `MessageType`.
+     * @param _origin Details of the LayerZero message origin.
+     * @param _guid The unique identifier of the LayerZero message.
+     * @param _payload The raw payload of the LayerZero message.
      */
     function _lzReceive(
         Origin calldata _origin,
@@ -423,7 +581,9 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             _processDepositMessage(payload, _guid, _origin.srcEid);
         } else if (messageType == MessageType.Swap) {
             SwapParams memory params = abi.decode(payload, (SwapParams));
-            require(msg.value >= params.value, "INSUFFICIENT_VALUE");
+            if (msg.value < params.value) {
+                revert InsufficientValue(msg.value, params.value);
+            }
             bytes memory options = OptionsBuilder.newOptions().addExecutorLzReceiveOption(
                 params.gasLimit,
                 0
@@ -461,15 +621,17 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
                 _origin.srcEid
             );
         } else {
-            revert("Invalid message type");
+            revert InvalidMessageType();
         }
     }
 
     /**
-     * @notice Links a synthetic token with a remote token in another network
-     * @param _payload Encoded payload
-     * @param _sender GatewayVault contract address in that chain
-     * @param _srcEid Network identifier
+     * @notice Links a synthetic token with a remote token in another network.
+     * @dev This function is called internally by `_lzReceive` when a `MessageType.LinkToken` is received.
+     * It updates mappings for token linking and emits a `RemoteTokenLinked` event.
+     * @param _payload Encoded payload containing an array of `AvailableToken` structs.
+     * @param _sender The address of the GatewayVault contract on the source chain.
+     * @param _srcEid The source network identifier from which the link message originated.
      */
     function _processLinkTokenMessage(
         bytes memory _payload,
@@ -477,103 +639,72 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         uint32 _srcEid
     ) internal {
         AvailableToken[] memory _availableTokens = abi.decode(_payload, (AvailableToken[]));
-        if (gatewayVaultByEid[_srcEid] != _sender) {
-            gatewayVaultByEid[_srcEid] = _sender;
+        if (_gatewayVaultByEid[_srcEid] != _sender) {
+            _gatewayVaultByEid[_srcEid] = _sender;
         }
+
         for (uint256 i = 0; i < _availableTokens.length; i++) {
             address syntheticTokenAddress = _availableTokens[i].syntheticTokenAddress;
             address remoteTokenAddress = _availableTokens[i].tokenAddress;
-            uint256 _tokenIndex = getSyntheticTokenIndex(syntheticTokenAddress); // revert if not found
-            RemoteTokenInfo storage remoteToken = remoteTokens[syntheticTokenAddress][_srcEid];
-            require(
-                remoteToken.remoteAddress == address(0) || remoteToken.totalBalance == 0,
-                "Remote token already linked"
-            );
+            uint256 _tokenIndex = _tokenIndexByAddress[syntheticTokenAddress];
+            if (_tokenIndex == 0) {
+                revert SyntheticTokenNotFound();
+            }
+
+            RemoteTokenInfo storage remoteToken = _remoteTokens[syntheticTokenAddress][_srcEid];
+            if (remoteToken.remoteAddress != address(0)) {
+                revert RemoteTokenAlreadyLinked(
+                    syntheticTokenAddress,
+                    _srcEid,
+                    remoteToken.remoteAddress
+                );
+            }
+
             remoteToken.remoteAddress = remoteTokenAddress;
             remoteToken.decimalsDelta = _availableTokens[i].decimalsDelta;
 
-            SyntheticTokenInfo storage tokenInfo = syntheticTokens[_tokenIndex];
+            SyntheticTokenInfo storage tokenInfo = _syntheticTokens[_tokenIndex];
             tokenInfo.chainList.push(_srcEid);
-            // Add token to lookup by remote address
-            syntheticAddressByRemoteAddress[_srcEid][remoteTokenAddress] = syntheticTokenAddress;
-            remoteAddressBySyntheticAddress[_srcEid][syntheticTokenAddress] = remoteTokenAddress;
+
+            _syntheticAddressByRemoteAddress[_srcEid][remoteTokenAddress] = syntheticTokenAddress;
+            _remoteAddressBySyntheticAddress[_srcEid][syntheticTokenAddress] = remoteTokenAddress;
         }
 
         emit RemoteTokenLinked(_availableTokens, _sender, _srcEid);
     }
 
-    function processSwapMessage(
-        SwapParams memory params,
-        uint32 _srcEid
-    ) external returns (bytes memory payload) {
-        require(msg.sender == address(this), "INVALID_SENDER");
-        address[] memory syntheticTokensIn = new address[](params.assets.length);
-
-        uint256 length = params.assets.length;
-        for (uint256 i = 0; i < length; i++) {
-            Asset memory asset = params.assets[i];
-            address syntheticTokenAddress = syntheticAddressByRemoteAddress[_srcEid][
-                asset.tokenAddress
-            ];
-            require(syntheticTokenAddress != address(0), "SYNTHETIC_NOT_FOUND");
-            syntheticTokensIn[i] = syntheticTokenAddress;
-            RemoteTokenInfo storage remoteToken = remoteTokens[syntheticTokenAddress][_srcEid];
-
-            // Normalize amount
-            uint256 normalizedAmount = _normalizeAmount(
-                asset.tokenAmount,
-                remoteToken.decimalsDelta
-            );
-
-            // Increase source network balance
-            remoteToken.totalBalance += normalizedAmount;
-
-            // Mint synthetic token
-            ISyntheticToken(syntheticTokenAddress).mint(address(this), normalizedAmount);
+    /**
+     * @dev Collects any dust tokens remaining in this contract after a swap and sends them to the recipient.
+     * This includes the output synthetic token and all input synthetic tokens.
+     * @param syntheticTokensIn Array of input synthetic token addresses used in the swap.
+     * @param syntheticTokenOut The output synthetic token address from the swap.
+     * @param recipient The address to receive any dust tokens.
+     */
+    function _collectDust(
+        address[] memory syntheticTokensIn,
+        address syntheticTokenOut,
+        address recipient
+    ) private {
+        uint256 balance = syntheticTokenOut.getBalanceOf(address(this));
+        if (balance > 0) {
+            syntheticTokenOut.safeTransfer(recipient, balance);
         }
-
-        (bool success, bytes memory returndata) = uniswapUniversalRouter.call(
-            abi.encodeWithSignature("execute(bytes,bytes[])", params.commands, params.inputs)
-        );
-        string memory errorMessage;
-
-        if (success) {
-            Asset[] memory assetsToBurn = new Asset[](1);
-            assetsToBurn[0] = Asset({
-                tokenAddress: params.syntheticTokenOut,
-                tokenAmount: ISyntheticToken(params.syntheticTokenOut).balanceOf(address(this))
-            });
-            Asset[] memory assetsToSend;
-            (assetsToSend, errorMessage) = _validateAndPrepareAssets(assetsToBurn, params.dstEid);
-            if (bytes(errorMessage).length == 0) {
-                _burnTokens(assetsToBurn, params.dstEid, address(this));
-                bytes memory msgData = abi.encode(params.from, params.to, assetsToSend);
-                payload = abi.encode(MessageType.Swap, msgData);
-            }
-        } else {
-            errorMessage = returndata.length > 0 ? string(returndata) : "SWAP_FAILED";
-        }
-
-        if (bytes(errorMessage).length > 0) {
-            revert(errorMessage);
-        } else {
-            _collectDust(syntheticTokensIn, params.from);
-        }
-
-        return payload;
-    }
-
-    function _collectDust(address[] memory syntheticTokensIn, address recipient) private {
         for (uint256 i = 0; i < syntheticTokensIn.length; i++) {
-            uint256 balance = syntheticTokensIn[i].getBalanceOf(address(this));
+            address token = syntheticTokensIn[i];
+            balance = token.getBalanceOf(address(this));
             if (balance > 0) {
-                syntheticTokensIn[i].safeTransfer(recipient, balance);
+                token.safeTransfer(recipient, balance);
             }
         }
     }
 
     /**
-     * @dev Processes the received message and mints synthetic tokens
+     * @dev Processes a deposit message received from a remote chain via LayerZero.
+     * This function is called internally by `_lzReceive` when a `MessageType.Deposit` is received.
+     * It mints synthetic tokens to the recipient, updates balances, and applies bonuses.
+     * @param _payload Encoded payload containing sender, recipient, and assets.
+     * @param _guid The LayerZero message GUID.
+     * @param _srcEid The source network identifier from which the deposit originated.
      */
     function _processDepositMessage(bytes memory _payload, bytes32 _guid, uint32 _srcEid) internal {
         (address _from, address _to, Asset[] memory _assets) = abi.decode(
@@ -583,17 +714,29 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
 
         for (uint256 i = 0; i < _assets.length; i++) {
             Asset memory asset = _assets[i];
-            address syntheticTokenAddress = syntheticAddressByRemoteAddress[_srcEid][
+            address syntheticTokenAddress = _syntheticAddressByRemoteAddress[_srcEid][
                 asset.tokenAddress
             ];
-            require(syntheticTokenAddress != address(0), "Synthetic token not found");
-            RemoteTokenInfo storage remoteToken = remoteTokens[syntheticTokenAddress][_srcEid];
+            if (syntheticTokenAddress == address(0)) revert SyntheticTokenNotFound();
+
+            RemoteTokenInfo storage remoteToken = _remoteTokens[syntheticTokenAddress][_srcEid];
 
             // Normalize amount
             uint256 normalizedAmount = _normalizeAmount(
                 asset.tokenAmount,
                 remoteToken.decimalsDelta
             );
+
+            uint256 bonus = _checkBonus(
+                syntheticTokenAddress,
+                _srcEid,
+                normalizedAmount,
+                remoteToken.totalBalance
+            );
+            _bonusBalance[syntheticTokenAddress][_srcEid] -= bonus;
+
+            // Add bonus
+            normalizedAmount += bonus;
 
             // Increase source network balance
             remoteToken.totalBalance += normalizedAmount;
@@ -610,7 +753,83 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     }
 
     /**
-     * @dev Normalizes token amount considering decimal places difference
+     * @dev Calculates the penalty for withdrawing a certain amount of a synthetic token.
+     * The penalty is determined by the Balancer contract and capped by `MAX_PENALTY_BP`.
+     * @param _syntheticTokenAddress The address of the synthetic token.
+     * @param _dstEid The destination network ID.
+     * @param _amountOut The amount of the synthetic token to be withdrawn.
+     * @param _currentBalance The current total balance of the synthetic token on the destination network.
+     * @return The penalty amount.
+     */
+    function _checkPenalty(
+        address _syntheticTokenAddress,
+        uint32 _dstEid,
+        uint256 _amountOut,
+        uint256 _currentBalance
+    ) private view returns (uint256) {
+        uint256 _tokenIndex = _tokenIndexByAddress[_syntheticTokenAddress];
+        SyntheticTokenInfo memory tokenInfo = _syntheticTokens[_tokenIndex];
+
+        uint256 penalty = IBalancer(balancer).getPenalty(
+            _syntheticTokenAddress,
+            _dstEid,
+            _currentBalance, // current balance of the synthetic token on the destination network
+            _amountOut,
+            tokenInfo.chainList.length
+        );
+        if (penalty == 0) {
+            return 0;
+        }
+        uint256 _maxPenalty = (_amountOut * MAX_PENALTY_BP) / BP;
+        if (penalty > _maxPenalty) {
+            penalty = _maxPenalty;
+        }
+
+        return penalty;
+    }
+
+    /**
+     * @dev Gets the bonus for depositing a given synthetic token and amount.
+     * The bonus is determined by the Balancer contract and capped by the available bonus balance.
+     * @param _syntheticTokenAddress The address of the synthetic token.
+     * @param _srcEid The source network ID.
+     * @param _amountIn The amount of the synthetic token being deposited/minted.
+     * @param _currentBalance The current total balance of the synthetic token on the source network.
+     * @return The bonus amount.
+     */
+    function _checkBonus(
+        address _syntheticTokenAddress,
+        uint32 _srcEid,
+        uint256 _amountIn,
+        uint256 _currentBalance
+    ) private view returns (uint256) {
+        uint256 _totalBonusBalance = _bonusBalance[_syntheticTokenAddress][_srcEid];
+        if (_totalBonusBalance == 0) {
+            return 0;
+        }
+        uint256 _tokenIndex = _tokenIndexByAddress[_syntheticTokenAddress];
+        SyntheticTokenInfo memory tokenInfo = _syntheticTokens[_tokenIndex];
+        uint256 bonus = IBalancer(balancer).getBonus(
+            _syntheticTokenAddress,
+            _srcEid,
+            _totalBonusBalance,
+            _currentBalance, // current balance of the synthetic token on the source network
+            _amountIn,
+            tokenInfo.chainList.length
+        );
+        if (bonus > _totalBonusBalance) {
+            bonus = _totalBonusBalance;
+        }
+        return bonus;
+    }
+
+    /**
+     * @dev Normalizes token amount considering decimal places difference.
+     * If `_decimalsDelta` is negative, it means the remote token has fewer decimals than the synthetic token, so we divide.
+     * If `_decimalsDelta` is positive, it means the remote token has more decimals, so we multiply.
+     * @param _amount The amount to normalize.
+     * @param _decimalsDelta The difference in decimal places (syntheticDecimals - remoteDecimals).
+     * @return The normalized amount.
      */
     function _normalizeAmount(
         uint256 _amount,
@@ -623,30 +842,31 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         }
     }
 
+    /**
+     * @dev Removes dust from a token amount when converting from a token with more decimals
+     * to one with fewer decimals. Ensures that the amount is a multiple of the precision difference.
+     * Only applies if `_decimalsDelta` is negative (synthetic token has more decimals than remote).
+     * @param _amount The amount to remove dust from.
+     * @param _decimalsDelta The difference in decimal places (syntheticDecimals - remoteDecimals).
+     * @return The amount with dust removed, or the original amount if no adjustment is needed.
+     */
     function _removeDust(uint256 _amount, int8 _decimalsDelta) internal pure returns (uint256) {
         if (_decimalsDelta < 0) {
-            uint8 absDecimalsDelta = uint8(-_decimalsDelta);
-            return (_amount / 10 ** absDecimalsDelta) * 10 ** absDecimalsDelta;
+            uint256 dustNormalizer = 10 ** uint8(-_decimalsDelta);
+            return (_amount / dustNormalizer) * dustNormalizer;
         }
         return _amount;
     }
 
     /**
-     * @notice Returns the index of a token by its address
-     * @param _tokenAddress Token contract address
-     * @return index Token index
+     * @dev Gets the storage slot data.
+     * @param slot The storage slot to get data from.
+     * @return The data in the storage slot.
      */
-    function getSyntheticTokenIndex(address _tokenAddress) public view returns (uint256 index) {
-        index = _tokenIndexByAddress[_tokenAddress];
-        require(index > 0, "Token not found");
-    }
-
-    /**
-     * @notice Checks if a token exists
-     * @param _tokenAddress Token contract address
-     * @return True if token exists
-     */
-    function isTokenRegistered(address _tokenAddress) public view returns (bool) {
-        return _tokenIndexByAddress[_tokenAddress] > 0;
+    function getStorageSlotData(uint256 slot) external view returns (bytes32) {
+        assembly {
+            mstore(0x00, sload(slot))
+            return(0x00, 0x20)
+        }
     }
 }
