@@ -9,3 +9,7 @@ mv .env_example .env
 npm run compile
 npm run test
 ```
+
+## Architecture Diagram
+
+![Architecture Diagram](scheme.png)
