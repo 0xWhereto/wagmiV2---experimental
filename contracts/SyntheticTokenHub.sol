@@ -49,6 +49,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         address remoteAddress; // Address of the token on the remote chain
         int8 decimalsDelta; // Difference in decimals between the synthetic token and the remote token
         uint256 totalBalance; // Total balance of this token on the remote chain, from the perspective of this hub
+        uint256 minBridgeAmt; // Minimum amount for bridging this token (in synthetic token decimals)
     }
 
     address public immutable uniswapUniversalRouter; // Address of the Uniswap Universal Router
@@ -182,6 +183,12 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     );
     error InvalidSwapSender();
     error SwapFailed(string reason);
+    error AmountLessThanMinBridgeAmount(
+        address tokenAddress,
+        uint32 eid,
+        uint256 amount,
+        uint256 minAmount
+    );
 
     /**
      * @notice Sets the balancer address
@@ -253,7 +260,8 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         // Validate and prepare assets (view operation)
         (Asset[] memory assetsRemote, uint256[] memory penalties) = validateAndPrepareAssets(
             _assets,
-            _dstEid
+            _dstEid,
+            false // Enforce minBridgeAmt check for regular bridge
         );
 
         for (uint256 i = 0; i < assetsRemote.length; i++) {
@@ -302,7 +310,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         view
         returns (uint256 nativeFee, Asset[] memory assetsRemote, uint256[] memory penalties)
     {
-        (assetsRemote, penalties) = validateAndPrepareAssets(_assets, _dstEid);
+        (assetsRemote, penalties) = validateAndPrepareAssets(_assets, _dstEid, false); // Enforce minBridgeAmt check for quote
 
         bytes memory msgData = abi.encode(_recipient, _recipient, assetsRemote);
         bytes memory payload = abi.encode(MessageType.Withdraw, msgData);
@@ -394,12 +402,14 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
      * removes dust, and calculates penalties.
      * @param _assets Array of assets (local synthetic token addresses and amounts) to be bridged.
      * @param _dstEid Destination network identifier.
+     * @param _skipMinBridgeAmtCheck Whether to skip the minBridgeAmt check
      * @return assets Array of prepared assets with remote token addresses and normalized amounts.
      * @return penalties Array of penalties calculated for each asset.
      */
     function validateAndPrepareAssets(
         Asset[] memory _assets,
-        uint32 _dstEid
+        uint32 _dstEid,
+        bool _skipMinBridgeAmtCheck
     ) public view returns (Asset[] memory assets, uint256[] memory penalties) {
         uint256 inputLength = _assets.length;
         assets = new Asset[](inputLength);
@@ -413,6 +423,16 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             RemoteTokenInfo memory remoteToken = _remoteTokens[syntheticTokenAddress][_dstEid];
             if (remoteToken.remoteAddress == address(0)) {
                 revert TokenNotLinkedToDestChain(syntheticTokenAddress, _dstEid);
+            }
+
+            // Check minBridgeAmt (in synthetic token decimals) if not skipping
+            if (!_skipMinBridgeAmtCheck && amount < remoteToken.minBridgeAmt) {
+                revert AmountLessThanMinBridgeAmount(
+                    syntheticTokenAddress,
+                    _dstEid,
+                    amount,
+                    remoteToken.minBridgeAmt
+                );
             }
 
             amount = _removeDust(amount, -remoteToken.decimalsDelta);
@@ -518,7 +538,8 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
             // If validateAndPrepareAssets fails, it will revert.
             (Asset[] memory assetsToSend, uint256[] memory penalties) = validateAndPrepareAssets(
                 assetsToBurn,
-                params.dstEid
+                params.dstEid,
+                true // Skip minBridgeAmt check for the tokenOut of a swap
             );
             if (assetsToSend[0].tokenAmount < params.minimumAmountOut) {
                 revert SwapFailed("Insufficient amount out");
@@ -662,6 +683,13 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
 
             remoteToken.remoteAddress = remoteTokenAddress;
             remoteToken.decimalsDelta = _availableTokens[i].decimalsDelta;
+            // minBridgeAmt from AvailableToken is in original token decimals.
+            // Need to normalize it to synthetic token decimals before storing in RemoteTokenInfo.
+            uint256 minBridgeAmtSynthetic = _normalizeAmount(
+                _availableTokens[i].minBridgeAmt,
+                _availableTokens[i].decimalsDelta
+            );
+            remoteToken.minBridgeAmt = minBridgeAmtSynthetic;
 
             SyntheticTokenInfo storage tokenInfo = _syntheticTokens[_tokenIndex];
             tokenInfo.chainList.push(_srcEid);

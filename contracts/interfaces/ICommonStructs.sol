@@ -32,4 +32,5 @@ struct AvailableToken {
     address tokenAddress;
     address syntheticTokenAddress;
     int8 decimalsDelta;
+    uint256 minBridgeAmt;
 }
