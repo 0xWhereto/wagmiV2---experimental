@@ -14,6 +14,7 @@ interface ISyntheticTokenHubGetters {
         address remoteAddress;
         int8 decimalsDelta;
         uint256 totalBalance;
+        uint256 minBridgeAmt; // Minimum amount for bridging this token (in synthetic token decimals)
     }
 
     struct RemoteTokenView {
@@ -61,4 +62,9 @@ interface ISyntheticTokenHubGetters {
     function isTokenRegistered(address _tokenAddress) external view returns (bool);
 
     function getBonusBalance(address _tokenAddress, uint32 _eid) external view returns (uint256);
+
+    function getMinBridgeAmount(
+        address _syntheticTokenAddress,
+        uint32 _eid
+    ) external view returns (uint256);
 }

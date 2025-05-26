@@ -275,6 +275,21 @@ contract SyntheticTokenHubGetters is ISyntheticTokenHubGetters {
         return uint256(indexData) > 0;
     }
 
+    /**
+     * @notice Gets the minimum bridge amount for a specific synthetic token on a specific chain (eid).
+     * @dev Reads `minBridgeAmt` from the `RemoteTokenInfo` struct in SyntheticTokenHub.
+     * @param _syntheticTokenAddress The address of the local synthetic token.
+     * @param _eid The endpoint ID (chain ID).
+     * @return uint256 The minimum bridge amount in synthetic token decimals.
+     */
+    function getMinBridgeAmount(
+        address _syntheticTokenAddress,
+        uint32 _eid
+    ) external view returns (uint256) {
+        RemoteTokenInfo memory remoteInfo = _getRemoteTokenInfo(_syntheticTokenAddress, _eid);
+        return remoteInfo.minBridgeAmt;
+    }
+
     // Helper functions to calculate storage slots
 
     /**
@@ -359,25 +374,30 @@ contract SyntheticTokenHubGetters is ISyntheticTokenHubGetters {
         //    address remoteAddress;      // 160 bits (20 bytes) - occupies bits 0-159
         //    int8 decimalsDelta;         // 8 bits (1 byte)   - occupies bits 160-167
         //    uint256 totalBalance;       // 256 bits (32 bytes) - stored entirely in the next slot (baseSlot + 1)
+        //    uint256 minBridgeAmt;       // 256 bits (32 bytes) - stored entirely in the slot (baseSlot + 2)
         // }
 
         // 1. Extract `remoteAddress` (first 160 bits / 20 bytes of the slot).
-        address remoteAddress = address(uint160(rawValue1)); // Lower 160 bits are the address.
+        address remoteAddressVal = address(uint160(rawValue1)); // Lower 160 bits are the address.
 
         // 2. Extract `decimalsDelta` (next 8 bits, shifted right by 160 bits).
         // The value is masked with 0xFF to get the 8 bits, then cast to int8.
-        int8 decimalsDelta = int8(uint8((rawValue1 >> 160) & 0xFF));
+        int8 decimalsDeltaVal = int8(uint8((rawValue1 >> 160) & 0xFF));
 
         // 3. Extract `totalBalance` from the next consecutive storage slot.
-        // Struct fields that don't fit are typically placed in subsequent slots.
         bytes32 data2 = getStorageSlotData(bytes32(uint256(baseSlot) + 1));
-        uint256 totalBalance = uint256(data2);
+        uint256 totalBalanceVal = uint256(data2);
+
+        // 4. Extract `minBridgeAmt` from the next consecutive storage slot (baseSlot + 2).
+        bytes32 data3 = getStorageSlotData(bytes32(uint256(baseSlot) + 2));
+        uint256 minBridgeAmtVal = uint256(data3);
 
         return
             RemoteTokenInfo({
-                remoteAddress: remoteAddress,
-                decimalsDelta: decimalsDelta,
-                totalBalance: totalBalance
+                remoteAddress: remoteAddressVal,
+                decimalsDelta: decimalsDeltaVal,
+                totalBalance: totalBalanceVal,
+                minBridgeAmt: minBridgeAmtVal
             });
     }
 

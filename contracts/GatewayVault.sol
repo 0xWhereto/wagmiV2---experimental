@@ -29,12 +29,14 @@ contract GatewayVault is OApp, OAppOptionsType3 {
      * @param tokenAddress The address of the original token on the source chain.
      * @param syntheticTokenDecimals The decimals of the corresponding synthetic token on the destination chain.
      * @param syntheticTokenAddress The address of the corresponding synthetic token on the destination chain.
+     * @param minBridgeAmt Minimum amount for bridging this token (in original token decimals)
      */
     struct TokenSetupConfig {
         bool onPause;
         address tokenAddress; // token address on the source chain
         uint8 syntheticTokenDecimals; // decimals of the token on the destination chain
         address syntheticTokenAddress; // address of the synthetic token on the destination chain
+        uint256 minBridgeAmt; // Minimum amount for bridging this token (in original token decimals)
     }
 
     /**
@@ -328,7 +330,8 @@ contract GatewayVault is OApp, OAppOptionsType3 {
                 onPause: _tokensConfig[i].onPause,
                 tokenAddress: _tokensConfig[i].tokenAddress,
                 syntheticTokenAddress: _tokensConfig[i].syntheticTokenAddress,
-                decimalsDelta: int8(_tokensConfig[i].syntheticTokenDecimals) - int8(tokenDecimals)
+                decimalsDelta: int8(_tokensConfig[i].syntheticTokenDecimals) - int8(tokenDecimals),
+                minBridgeAmt: _tokensConfig[i].minBridgeAmt
             });
             _availableTokens[i] = _availableToken;
         }
@@ -507,8 +510,14 @@ contract GatewayVault is OApp, OAppOptionsType3 {
             uint256 _index = getTokenIndex(_assetEntry.tokenAddress);
             AvailableToken memory _availableToken = availableTokens[_index];
             require(!_availableToken.onPause, "Token is paused");
+
+            if (_assetEntry.tokenAmount < _availableToken.minBridgeAmt) {
+                revert("Amount is less than minimum bridge amount for this token.");
+            }
+
             uint256 _amount = _removeDust(_assetEntry.tokenAmount, _availableToken.decimalsDelta);
             require(_amount > 0, "Amount is too small");
+
             assets[i] = Asset({ tokenAddress: _availableToken.tokenAddress, tokenAmount: _amount });
         }
     }

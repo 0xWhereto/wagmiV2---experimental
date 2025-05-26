@@ -179,6 +179,7 @@ describe("SyntheticTokenHubGetters", function () {
                 tokenAddress: mockToken.address,
                 syntheticTokenDecimals: await syntheticToken.decimals(),
                 syntheticTokenAddress: syntheticToken.address,
+                minBridgeAmt: 0,
               },
             ];
 
@@ -411,6 +412,7 @@ describe("SyntheticTokenHubGetters", function () {
           tokenAddress: remoteToken6Decimals.address,
           syntheticTokenDecimals: newTokenDecimals,
           syntheticTokenAddress: syntheticTokenAddress,
+          minBridgeAmt: 0,
         },
       ];
 
@@ -429,6 +431,7 @@ describe("SyntheticTokenHubGetters", function () {
           tokenAddress: remoteToken18Decimals.address,
           syntheticTokenDecimals: newTokenDecimals,
           syntheticTokenAddress: syntheticTokenAddress,
+          minBridgeAmt: 0,
         },
       ];
 
@@ -484,6 +487,7 @@ describe("SyntheticTokenHubGetters", function () {
           tokenAddress: remoteToken.address,
           syntheticTokenDecimals: testTokenDecimals,
           syntheticTokenAddress: syntheticTokenAddress,
+          minBridgeAmt: 0,
         },
       ];
 
@@ -629,6 +633,7 @@ describe("SyntheticTokenHubGetters", function () {
           tokenAddress: remoteBonusTokenDummy.address,
           syntheticTokenDecimals: bonusTestTokenDecimals,
           syntheticTokenAddress: syntheticBonusTokenAddress,
+          minBridgeAmt: 0,
         },
       ];
       const linkOptionsDummy = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex();
@@ -653,6 +658,7 @@ describe("SyntheticTokenHubGetters", function () {
           tokenAddress: remoteBonusToken.address,
           syntheticTokenDecimals: bonusTestTokenDecimals,
           syntheticTokenAddress: syntheticBonusTokenAddress,
+          minBridgeAmt: 0,
         },
       ];
 
