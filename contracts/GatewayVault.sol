@@ -200,6 +200,7 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     ) external payable onlyOwner {
         AvailableToken[] memory newTokens = _setupConfigToAvailableToken(_tokensConfig);
         for (uint256 i = 0; i < newTokens.length; i++) {
+            require(_tokenIndexPlusOne[newTokens[i].tokenAddress] == 0, "Token already linked");
             availableTokens.push(newTokens[i]);
             _tokenIndexPlusOne[newTokens[i].tokenAddress] = availableTokens.length;
         }

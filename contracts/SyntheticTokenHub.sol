@@ -149,6 +149,11 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
      * @param srcEid The source endpoint ID from which the message originated.
      */
     event MessageReceived(bytes32 guid, address from, address to, Asset[] assets, uint32 srcEid);
+    /**
+     * @dev Emitted when the balancer address is set.
+     * @param balancerAddress The address of the balancer contract.
+     */
+    event BalancerSet(address balancerAddress);
 
     constructor(
         address _endpoint,
@@ -196,6 +201,7 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
      */
     function setBalancer(address _balancer) external onlyOwner {
         balancer = _balancer;
+        emit BalancerSet(_balancer);
     }
 
     /**
