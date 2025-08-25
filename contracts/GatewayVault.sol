@@ -351,7 +351,7 @@ contract GatewayVault is OApp, OAppOptionsType3 {
         address _recepient,
         Asset[] memory _assets
     ) internal returns (MessagingReceipt memory receipt) {
-        _transferBatch(_assets);
+        _transferFromBatch(_assets);
         receipt = _lzSend(
             DST_EID,
             _payload,
@@ -398,18 +398,10 @@ contract GatewayVault is OApp, OAppOptionsType3 {
      * @param _payload The decoded payload specific to RevertSwap.
      */
     function _processMessageRevertSwap(MessageType messageType, bytes memory _payload) internal {
-        (
-            address _from,
-            address _to,
-            Asset[] memory _assets,
-            bytes32 _guid,
-            string memory _reason
-        ) = abi.decode(_payload, (address, address, Asset[], bytes32, string));
+        (address _from, , Asset[] memory _assets, bytes32 _guid, string memory _reason) = abi
+            .decode(_payload, (address, address, Asset[], bytes32, string));
 
-        for (uint256 i = 0; i < _assets.length; i++) {
-            Asset memory _asset = _assets[i];
-            _asset.tokenAddress.safeTransfer(_to, _asset.tokenAmount);
-        }
+        _transferBatch(_assets, _from);
         emit ReceivedRevert(messageType, _guid, _from, _reason);
     }
 
@@ -432,11 +424,20 @@ contract GatewayVault is OApp, OAppOptionsType3 {
             (address, address, Asset[])
         );
 
+        _transferBatch(_assets, _to);
+        emit MessageReceived(messageType, _srcEid, _guid, _from, _to, _assets);
+    }
+
+    /**
+     * @dev Transfers a batch of assets to a recipient.
+     * @param _assets Array of `Asset` structs specifying tokens and amounts to transfer.
+     * @param _to The recipient address.
+     */
+    function _transferBatch(Asset[] memory _assets, address _to) internal {
         for (uint256 i = 0; i < _assets.length; i++) {
             Asset memory _asset = _assets[i];
             _asset.tokenAddress.safeTransfer(_to, _asset.tokenAmount);
         }
-        emit MessageReceived(messageType, _srcEid, _guid, _from, _to, _assets);
     }
 
     /**
@@ -444,7 +445,7 @@ contract GatewayVault is OApp, OAppOptionsType3 {
      * @param _assets Array of `Asset` structs specifying tokens and amounts to transfer.
      * @custom:reverts if any token transfer fails (e.g., insufficient allowance or balance).
      */
-    function _transferBatch(Asset[] memory _assets) internal {
+    function _transferFromBatch(Asset[] memory _assets) internal {
         for (uint256 i = 0; i < _assets.length; i++) {
             Asset memory _asset = _assets[i];
             _asset.tokenAddress.safeTransferFrom(msg.sender, address(this), _asset.tokenAmount);
