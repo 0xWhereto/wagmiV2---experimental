@@ -205,6 +205,52 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     }
 
     /**
+     * @notice Admin function to rescue tokens locked in gateway vaults.
+     * @dev Sends a withdraw message to the gateway to release tokens to recipient.
+     *      This bypasses the normal burn flow and should only be used for rescue operations.
+     * @param _dstEid The destination endpoint ID (gateway chain)
+     * @param _recipient The address to receive the tokens on the destination chain
+     * @param _assets Array of assets to rescue (tokenAddress should be the GATEWAY token address)
+     * @param _options LayerZero messaging options
+     */
+    function adminRescueFromGateway(
+        uint32 _dstEid,
+        address _recipient,
+        Asset[] calldata _assets,
+        bytes calldata _options
+    ) external payable onlyOwner returns (MessagingReceipt memory receipt) {
+        require(_recipient != address(0), "Invalid recipient");
+        require(_assets.length > 0, "No assets");
+
+        // Encode withdraw message (from = owner, to = recipient)
+        bytes memory msgData = abi.encode(msg.sender, _recipient, _assets);
+        bytes memory payload = abi.encode(MessageType.Withdraw, msgData);
+
+        // Send message to gateway
+        receipt = _lzSend(
+            _dstEid,
+            payload,
+            _options,
+            MessagingFee(msg.value, 0),
+            payable(msg.sender)
+        );
+    }
+
+    /**
+     * @notice Quote the fee for adminRescueFromGateway
+     */
+    function quoteAdminRescue(
+        uint32 _dstEid,
+        address _recipient,
+        Asset[] calldata _assets,
+        bytes calldata _options
+    ) external view returns (uint256 nativeFee) {
+        bytes memory msgData = abi.encode(msg.sender, _recipient, _assets);
+        bytes memory payload = abi.encode(MessageType.Withdraw, msgData);
+        nativeFee = (_quote(_dstEid, payload, _options, false)).nativeFee;
+    }
+
+    /**
      * @notice Creates and adds a new synthetic token
      * @param _symbol Token symbol
      * @param _decimals Token decimals
@@ -248,6 +294,57 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
         }
 
         emit SyntheticTokenAdded(tokenIndex, tokenAddress, _symbol, _decimals);
+    }
+
+    /**
+     * @notice Manually links a remote token to a synthetic token (emergency/admin function)
+     * @dev This bypasses LayerZero messaging for recovery purposes
+     * @param _syntheticTokenAddress The address of the local synthetic token
+     * @param _srcEid The endpoint ID of the source chain
+     * @param _remoteTokenAddress The address of the token on the remote chain
+     * @param _gatewayVault The address of the GatewayVault on the remote chain
+     * @param _decimalsDelta The difference in decimals (synthetic - remote)
+     * @param _minBridgeAmt Minimum bridge amount (in synthetic token decimals)
+     */
+    function manualLinkRemoteToken(
+        address _syntheticTokenAddress,
+        uint32 _srcEid,
+        address _remoteTokenAddress,
+        address _gatewayVault,
+        int8 _decimalsDelta,
+        uint256 _minBridgeAmt
+    ) external onlyOwner {
+        require(_tokenIndexByAddress[_syntheticTokenAddress] > 0, "Synthetic token not found");
+        require(_remoteTokenAddress != address(0), "Invalid remote token address");
+        require(_syntheticAddressByRemoteAddress[_srcEid][_remoteTokenAddress] == address(0), "Already linked");
+
+        // Update gateway vault mapping
+        if (_gatewayVaultByEid[_srcEid] != _gatewayVault) {
+            _gatewayVaultByEid[_srcEid] = _gatewayVault;
+        }
+
+        // Set up the remote token info
+        RemoteTokenInfo storage remoteToken = _remoteTokens[_syntheticTokenAddress][_srcEid];
+        remoteToken.remoteAddress = _remoteTokenAddress;
+        remoteToken.decimalsDelta = _decimalsDelta;
+        remoteToken.minBridgeAmt = _minBridgeAmt;
+
+        // Update lookup mappings
+        _syntheticAddressByRemoteAddress[_srcEid][_remoteTokenAddress] = _syntheticTokenAddress;
+        _remoteAddressBySyntheticAddress[_srcEid][_syntheticTokenAddress] = _remoteTokenAddress;
+
+        // Add chain to token's chain list
+        SyntheticTokenInfo storage tokenInfo = _syntheticTokens[_tokenIndexByAddress[_syntheticTokenAddress]];
+        bool chainExists = false;
+        for (uint256 i = 0; i < tokenInfo.chainList.length; i++) {
+            if (tokenInfo.chainList[i] == _srcEid) {
+                chainExists = true;
+                break;
+            }
+        }
+        if (!chainExists) {
+            tokenInfo.chainList.push(_srcEid);
+        }
     }
 
     /**

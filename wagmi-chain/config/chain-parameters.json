@@ -1,0 +1,144 @@
+{
+  "$schema": "./chain-parameters.schema.json",
+  "chain": {
+    "name": "Wagmi Chain",
+    "shortName": "wagmi",
+    "chainId": null,
+    "description": "Wagmi Protocol HUB Chain - Central chain for synthetic token operations",
+    "type": "arbitrum-orbit-rollup",
+    "settlementLayer": "ethereum-mainnet"
+  },
+  "network": {
+    "rpcUrl": null,
+    "wsUrl": null,
+    "explorerUrl": null,
+    "bridgeUrl": null
+  },
+  "technical": {
+    "evmVersion": "paris",
+    "solidityVersion": "0.8.23",
+    "blockTimeMs": 250,
+    "gasLimitPerBlock": 32000000,
+    "maxTransactionSize": 131072
+  },
+  "economics": {
+    "gasToken": {
+      "symbol": "ETH",
+      "name": "Ether",
+      "decimals": 18,
+      "isNative": true
+    },
+    "feeModel": "arbitrum-standard",
+    "sequencerFeeGwei": 0.01
+  },
+  "governance": {
+    "sequencerMode": "centralized",
+    "adminMultisig": {
+      "threshold": 3,
+      "owners": 5,
+      "address": null
+    },
+    "challengePeriodDays": 7,
+    "upgradeTimelockDays": 2
+  },
+  "layerzero": {
+    "endpointId": null,
+    "endpointAddress": "0x1a44076050125825900e736c501f859c50fE728c",
+    "sendLibrary": null,
+    "receiveLibrary": null,
+    "executor": null,
+    "dvn": {
+      "required": [],
+      "optional": [],
+      "optionalThreshold": 1
+    },
+    "confirmations": 20
+  },
+  "contracts": {
+    "syntheticTokenHub": {
+      "address": null,
+      "deploymentTx": null
+    },
+    "balancer": {
+      "address": null,
+      "deploymentTx": null
+    },
+    "weth9": {
+      "address": null,
+      "deploymentTx": null
+    },
+    "uniswap": {
+      "factory": null,
+      "swapRouter": null,
+      "quoter": null,
+      "positionManager": null,
+      "permit2": null
+    }
+  },
+  "spokeChains": [
+    {
+      "name": "Arbitrum One",
+      "eid": 30110,
+      "gatewayVault": "0x0b3095Cd06d649b66f38a7a17f02e8Ba000b7baF",
+      "status": "active"
+    },
+    {
+      "name": "Base",
+      "eid": 30184,
+      "gatewayVault": "0x5AafA963D0D448ba3bE2c5940F1778505AcA9512",
+      "status": "active"
+    },
+    {
+      "name": "Sonic",
+      "eid": 30332,
+      "gatewayVault": "0x1bbcE9Fc68E47Cd3E4B6bC3BE64E271bcDb3edf1",
+      "status": "active"
+    },
+    {
+      "name": "Ethereum",
+      "eid": 30101,
+      "gatewayVault": null,
+      "status": "planned"
+    }
+  ],
+  "deployment": {
+    "raasProvider": null,
+    "raasContact": null,
+    "targetLaunchDate": null,
+    "status": "planning",
+    "phases": [
+      {
+        "name": "Provider Selection",
+        "status": "pending",
+        "targetDate": null
+      },
+      {
+        "name": "Chain Deployment",
+        "status": "pending",
+        "targetDate": null
+      },
+      {
+        "name": "LayerZero Integration",
+        "status": "pending",
+        "targetDate": null
+      },
+      {
+        "name": "Contract Deployment",
+        "status": "pending",
+        "targetDate": null
+      },
+      {
+        "name": "Testing & Launch",
+        "status": "pending",
+        "targetDate": null
+      }
+    ]
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "createdAt": "2024-12-12",
+    "updatedAt": "2024-12-12",
+    "author": "Wagmi Protocol Team"
+  }
+}
+

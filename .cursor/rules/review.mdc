@@ -1,0 +1,178 @@
+---
+description: Review workflow - Multi-dimensional code review and quality assurance
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# 🔍 REVIEW PHASE - Compound Engineering Workflow
+
+When the user asks to "review", "check", or "audit" code, perform a comprehensive multi-agent style review:
+
+## Review Dimensions
+
+Analyze code from multiple perspectives:
+
+### 1. 🔒 Security Review
+- **Input validation**: Are all inputs validated and sanitized?
+- **Authentication/Authorization**: Are access controls properly implemented?
+- **Data exposure**: Is sensitive data properly protected?
+- **Injection attacks**: SQL, XSS, command injection vulnerabilities?
+- **Cryptography**: Are secure algorithms and practices used?
+- **Dependencies**: Any known vulnerable dependencies?
+
+For Smart Contracts specifically:
+- Reentrancy vulnerabilities
+- Integer overflow/underflow (pre-0.8.0)
+- Access control issues
+- Front-running possibilities
+- Flash loan attack vectors
+- Oracle manipulation risks
+
+### 2. ⚡ Performance Review
+- **Algorithmic complexity**: O(n²) or worse operations?
+- **Memory usage**: Unnecessary allocations or leaks?
+- **Database/API calls**: N+1 queries? Unnecessary calls?
+- **Bundle size**: Unused imports or heavy dependencies?
+- **Caching**: Proper use of memoization/caching?
+- **Lazy loading**: Are heavy resources loaded on demand?
+
+For Smart Contracts:
+- Gas optimization opportunities
+- Storage vs memory usage
+- Loop optimizations
+- Struct packing
+
+### 3. 🏛️ Architecture Review
+- **SOLID principles**: Single responsibility, open/closed, etc.
+- **Separation of concerns**: Is business logic separate from UI?
+- **Dependency direction**: Do dependencies flow correctly?
+- **Coupling**: Are components loosely coupled?
+- **Cohesion**: Do modules have high cohesion?
+- **Patterns**: Are appropriate design patterns used?
+
+### 4. 📝 Code Quality Review
+- **Readability**: Is the code self-documenting?
+- **Naming**: Are names descriptive and consistent?
+- **Comments**: Are complex parts explained?
+- **Dead code**: Any unused code?
+- **DRY**: Is there code duplication?
+- **Complexity**: Are functions too long or complex?
+
+### 5. 🧪 Testing Review
+- **Coverage**: Are critical paths tested?
+- **Edge cases**: Are boundary conditions tested?
+- **Error cases**: Are failure scenarios tested?
+- **Mocking**: Is external functionality properly mocked?
+- **Assertions**: Are assertions meaningful?
+- **Test quality**: Are tests maintainable and readable?
+
+### 6. 🔧 Maintainability Review
+- **Documentation**: Is the code properly documented?
+- **Type safety**: Are types properly defined?
+- **Error handling**: Are errors handled consistently?
+- **Configuration**: Is config externalized properly?
+- **Logging**: Is logging adequate for debugging?
+- **Backwards compatibility**: Will this break existing usage?
+
+## Review Output Format
+
+```markdown
+# Code Review: [Feature/File Name]
+
+## Summary
+[1-2 sentence overview of findings]
+
+## 🔴 Critical Issues
+Issues that must be fixed before merge:
+1. **[Issue Name]** - [File:Line]
+   - Problem: [Description]
+   - Risk: [Security/Performance/Correctness]
+   - Fix: [Suggested solution]
+
+## 🟡 Warnings
+Issues that should be addressed:
+1. **[Issue Name]** - [File:Line]
+   - Problem: [Description]
+   - Impact: [Description]
+   - Recommendation: [Suggestion]
+
+## 🟢 Suggestions
+Nice-to-have improvements:
+1. **[Improvement]** - [File:Line]
+   - Benefit: [Description]
+   - Implementation: [Brief approach]
+
+## 📊 Review Scorecard
+
+| Dimension | Score | Notes |
+|-----------|-------|-------|
+| Security | ⭐⭐⭐⭐⭐ | [Brief note] |
+| Performance | ⭐⭐⭐⭐⭐ | [Brief note] |
+| Architecture | ⭐⭐⭐⭐⭐ | [Brief note] |
+| Code Quality | ⭐⭐⭐⭐⭐ | [Brief note] |
+| Testing | ⭐⭐⭐⭐⭐ | [Brief note] |
+| Maintainability | ⭐⭐⭐⭐⭐ | [Brief note] |
+
+## ✅ Approval Status
+- [ ] Approved
+- [ ] Approved with minor changes
+- [ ] Changes requested
+- [ ] Needs significant rework
+
+## Action Items
+1. [ ] [Specific action item]
+2. [ ] [Specific action item]
+```
+
+## Review Best Practices
+
+### Before Reviewing
+1. Understand the feature requirements
+2. Read the implementation plan (if exists)
+3. Know the acceptance criteria
+
+### During Review
+1. Read code in logical order (not file order)
+2. Understand the flow before critiquing details
+3. Check consistency with codebase patterns
+4. Consider both current and future implications
+5. Balance perfectionism with pragmatism
+
+### Giving Feedback
+- Be specific: Point to exact lines and issues
+- Be constructive: Suggest solutions, not just problems
+- Be prioritized: Distinguish must-fix from nice-to-have
+- Be respectful: Focus on code, not coder
+- Be educative: Explain why, not just what
+
+## Quick Review Checklist
+
+```
+Security
+[ ] No hardcoded secrets or credentials
+[ ] Input validation on all user inputs
+[ ] Proper authorization checks
+[ ] No obvious injection vulnerabilities
+
+Performance
+[ ] No obvious O(n²) or worse algorithms
+[ ] No unnecessary re-renders/computations
+[ ] Proper use of caching/memoization
+
+Quality
+[ ] Code is readable and well-named
+[ ] No unused code or imports
+[ ] Error handling is appropriate
+[ ] Types are properly defined
+
+Testing
+[ ] Tests exist for new functionality
+[ ] Edge cases are covered
+[ ] Tests are meaningful, not just present
+
+Maintainability
+[ ] Changes are backward compatible
+[ ] No magic numbers or strings
+[ ] Proper separation of concerns
+```

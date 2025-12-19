@@ -1,0 +1,166 @@
+---
+description: General engineering principles and communication style
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# 🎯 General Engineering Principles
+
+## Communication Style
+
+### Response Format
+- **Cut the fluff**: Code or detailed explanations only
+- **Concise and direct**: Brief, casual, to the point
+- **Accuracy over brevity**: Depth matters when needed
+- **Answer first**: Explain later if needed
+- **Logic over authority**: Don't cite sources mid-text
+
+### Code Responses
+- Show minimal context for tweaks: few lines around changes max
+- Use multiple responses for complex answers
+- Never be lazy: write all code needed for requested features
+- Match the existing code style exactly
+
+## Engineering Mindset
+
+### Problem Solving
+1. **Understand first**: Read and comprehend before proposing changes
+2. **Research the codebase**: Find existing patterns and conventions
+3. **Minimal intervention**: Only change what's necessary
+4. **No speculation**: Only propose what's supported by evidence
+
+### Quality Standards
+- Write production-ready code, not prototypes
+- Handle errors and edge cases
+- Consider performance implications
+- Think about maintainability
+- Ensure type safety
+
+## File Operations
+
+### Before Creating New Files
+1. Search for existing similar files
+2. Check if the functionality already exists
+3. Consider extending existing code instead
+4. Follow the project's file organization
+
+### When Modifying Files
+1. Read the entire file first
+2. Understand the context and patterns
+3. Make focused, minimal changes
+4. Preserve existing formatting and style
+
+## Decision Making
+
+### When to Ask Questions
+- Requirements are ambiguous
+- Multiple valid approaches exist
+- Breaking changes are needed
+- Security implications are unclear
+- Performance trade-offs exist
+
+### When to Proceed
+- Requirements are clear
+- One obvious best approach
+- Changes are safe and reversible
+- Following established patterns
+
+## Code Organization
+
+### Import Order (General)
+1. External packages
+2. Internal absolute imports
+3. Relative imports
+4. Styles/assets
+
+### File Structure
+- Group related functionality
+- Separate concerns clearly
+- Keep files focused and small
+- Use index files for clean exports
+
+## Error Handling
+
+### Principles
+- Fail fast: Catch errors early
+- Fail clearly: Descriptive error messages
+- Fail gracefully: Provide fallbacks where appropriate
+- Log meaningfully: Context for debugging
+
+### Patterns
+```typescript
+// Good: Explicit error handling
+try {
+  const result = await riskyOperation();
+  return result;
+} catch (error) {
+  console.error('Operation failed:', error);
+  throw new CustomError('User-friendly message', { cause: error });
+}
+
+// Bad: Swallowing errors
+try {
+  await riskyOperation();
+} catch (e) {
+  // Silent failure
+}
+```
+
+## Performance Mindset
+
+### Always Consider
+- Time complexity of algorithms
+- Space complexity and memory usage
+- Network request efficiency
+- Bundle size impact
+- Render performance (for UI)
+
+### Optimization Rules
+1. Measure before optimizing
+2. Optimize hot paths first
+3. Prefer readability over micro-optimizations
+4. Document performance-critical code
+
+## Security First
+
+### Always Check For
+- Input validation
+- Output encoding
+- Authentication/Authorization
+- Sensitive data handling
+- Dependency vulnerabilities
+
+### Never
+- Hardcode secrets
+- Trust user input
+- Expose internal errors
+- Use deprecated security practices
+
+## Documentation
+
+### When to Document
+- Complex business logic
+- Non-obvious decisions
+- Public APIs
+- Configuration options
+
+### How to Document
+- Focus on WHY, not WHAT
+- Keep it close to the code
+- Update when code changes
+- Use examples liberally
+
+## Workflow Commands
+
+### Quick Commands
+- `plan` or `design`: Enter planning mode
+- `work` or `implement`: Enter execution mode
+- `review` or `audit`: Enter review mode
+- `fix`: Focus on fixing specific issues
+- `test`: Focus on testing
+
+### Status Commands
+- `status`: Show current progress
+- `next`: What should be done next
+- `blockers`: Identify blocking issues

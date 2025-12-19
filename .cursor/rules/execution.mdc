@@ -1,0 +1,147 @@
+---
+description: Execution workflow - Systematic task implementation with validation
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# 🔨 EXECUTION PHASE - Compound Engineering Workflow
+
+When the user asks to "work", "implement", "build", or "code" a feature, follow this systematic execution process:
+
+## Pre-Work Checklist
+Before starting implementation:
+1. ✅ Verify a plan exists or create one
+2. ✅ Understand the current task's scope
+3. ✅ Identify files that need to be read first
+4. ✅ Note any dependencies on previous tasks
+
+## Systematic Implementation Process
+
+### Step 1: Context Gathering
+- Read relevant existing files completely
+- Understand imports, exports, and dependencies
+- Note patterns and conventions in use
+- Identify test files that need updating
+
+### Step 2: Implementation
+Execute each task following these principles:
+
+#### Code Quality Standards
+- **Match existing style**: Adopt the codebase's conventions exactly
+- **Minimal changes**: Only modify what's necessary
+- **Self-documenting**: Code should be readable without comments
+- **Type safety**: Use proper types, avoid `any`
+- **Error handling**: Handle edge cases and errors gracefully
+
+#### Task Execution Pattern
+```
+1. READ: Fully understand affected files
+2. PLAN: Identify exact changes needed
+3. IMPLEMENT: Make focused, atomic changes
+4. VALIDATE: Check for errors, type issues
+5. TEST: Ensure tests pass or update them
+```
+
+### Step 3: Continuous Validation
+After each significant change:
+- Check for linter errors
+- Verify type correctness
+- Run relevant tests mentally
+- Ensure no regressions
+
+## Work Tracking
+
+### Progress Updates
+Track task status using this format:
+
+```markdown
+## Current Task: [Task Name]
+**Status**: 🟡 In Progress | 🟢 Complete | 🔴 Blocked
+
+### Completed
+- ✅ [Subtask 1]
+- ✅ [Subtask 2]
+
+### In Progress
+- 🔄 [Current subtask]
+
+### Remaining
+- ⬜ [Pending subtask]
+
+### Blockers
+- [Any blocking issues]
+```
+
+### Task Completion Criteria
+A task is complete when:
+1. ✅ Code compiles without errors
+2. ✅ No linter warnings introduced
+3. ✅ Types are correct
+4. ✅ Existing tests pass
+5. ✅ New tests written (if required)
+6. ✅ Edge cases handled
+7. ✅ Documentation updated (if needed)
+
+## Git Workflow Integration
+
+### Commit Practices
+- Make atomic commits for each logical change
+- Use conventional commit messages:
+  - `feat:` for new features
+  - `fix:` for bug fixes
+  - `refactor:` for refactoring
+  - `test:` for test changes
+  - `docs:` for documentation
+  - `chore:` for maintenance
+
+### Branch Strategy
+- Work on feature branches
+- Keep commits focused and reviewable
+- Rebase to keep history clean
+
+## Error Recovery
+
+### When Stuck
+1. Re-read the original requirements
+2. Check for missing context in files
+3. Identify assumptions that might be wrong
+4. Break the problem into smaller pieces
+5. Ask clarifying questions
+
+### When Errors Occur
+1. Read error messages carefully
+2. Trace the error to its source
+3. Fix root cause, not symptoms
+4. Verify fix doesn't break other things
+
+## Execution Principles
+
+### Do's
+- ✅ Make incremental, testable changes
+- ✅ Validate after each change
+- ✅ Keep the codebase in a working state
+- ✅ Match existing patterns exactly
+- ✅ Write tests for new functionality
+- ✅ Document non-obvious decisions
+
+### Don'ts
+- ❌ Make large, sweeping changes at once
+- ❌ Skip reading existing code thoroughly
+- ❌ Ignore type errors or warnings
+- ❌ Add unnecessary abstractions
+- ❌ Over-engineer solutions
+- ❌ Leave incomplete implementations
+
+## Quality Gates
+
+Before marking any task complete:
+```
+[ ] Code follows project conventions
+[ ] No new linter errors or warnings
+[ ] Types are properly defined
+[ ] Error cases are handled
+[ ] Tests exist for new functionality
+[ ] No console.logs or debug code left
+[ ] Imports are organized and clean
+```

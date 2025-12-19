@@ -1,0 +1,190 @@
+---
+description: Solidity and smart contract development best practices
+globs:
+  - contracts/**/*.sol
+  - test/**/*.ts
+  - scripts/**/*.ts
+alwaysApply: false
+---
+
+# 🔗 Solidity & Smart Contract Rules
+
+## Code Style
+
+### Naming Conventions
+- **Contracts**: CamelCase (`SyntheticTokenHub`)
+- **Interfaces**: PascalCase with "I" prefix (`ISyntheticToken`)
+- **Functions**: camelCase (`calculateFee`)
+- **Constants**: SCREAMING_SNAKE_CASE (`MAX_FEE`)
+- **State variables**: camelCase with underscore prefix for private (`_balance`)
+- **Events**: CamelCase past tense (`TokenMinted`)
+- **Errors**: CamelCase (`InsufficientBalance`)
+
+### Function Organization
+```solidity
+// 1. Errors
+error InsufficientBalance();
+
+// 2. Events
+event Transfer(address indexed from, address indexed to, uint256 amount);
+
+// 3. State variables
+uint256 private _totalSupply;
+
+// 4. Modifiers
+modifier onlyOwner() { ... }
+
+// 5. Constructor
+
+// 6. External functions
+// 7. Public functions
+// 8. Internal functions
+// 9. Private functions
+// 10. View/Pure functions
+```
+
+## Security Practices
+
+### Mandatory Patterns
+- Use **Checks-Effects-Interactions** pattern
+- Use **ReentrancyGuard** for external calls
+- Use **SafeERC20** for token interactions
+- Use **AccessControl** for permissions
+- Implement **Pausable** for emergency stops
+
+### Common Vulnerabilities to Prevent
+```solidity
+// ❌ Bad: State change after external call
+function withdraw(uint256 amount) external {
+    require(balances[msg.sender] >= amount);
+    payable(msg.sender).transfer(amount); // External call
+    balances[msg.sender] -= amount; // State change after
+}
+
+// ✅ Good: Checks-Effects-Interactions
+function withdraw(uint256 amount) external nonReentrant {
+    require(balances[msg.sender] >= amount); // Check
+    balances[msg.sender] -= amount; // Effect
+    payable(msg.sender).transfer(amount); // Interaction
+}
+```
+
+### Flash Loan Considerations
+- Don't assume token balances are static
+- Validate state at critical points
+- Consider sandwich attack vectors
+
+### Oracle Security
+- Use multiple oracle sources when possible
+- Implement staleness checks
+- Handle oracle failures gracefully
+
+## Gas Optimization
+
+### Storage Optimization
+```solidity
+// ❌ Bad: Wastes storage slots
+struct User {
+    uint8 age;      // Slot 1
+    address addr;   // Slot 2
+    uint8 level;    // Slot 3
+}
+
+// ✅ Good: Packed into 2 slots
+struct User {
+    address addr;   // Slot 1 (20 bytes)
+    uint8 age;      // Slot 1 (1 byte)
+    uint8 level;    // Slot 1 (1 byte)
+}
+```
+
+### Loop Optimization
+```solidity
+// ❌ Bad: Reading array length each iteration
+for (uint i = 0; i < array.length; i++) { ... }
+
+// ✅ Good: Cache array length
+uint256 length = array.length;
+for (uint256 i = 0; i < length; ) {
+    ...
+    unchecked { ++i; }
+}
+```
+
+### Memory vs Storage
+- Use `memory` for temporary data
+- Use `calldata` for external function inputs
+- Avoid copying storage to memory unnecessarily
+
+### Custom Errors
+```solidity
+// ❌ Bad: String reverts
+require(balance > amount, "Insufficient balance");
+
+// ✅ Good: Custom errors (cheaper)
+error InsufficientBalance(uint256 available, uint256 required);
+if (balance < amount) revert InsufficientBalance(balance, amount);
+```
+
+## Documentation
+
+### NatSpec for All Public Functions
+```solidity
+/// @notice Transfers tokens from sender to recipient
+/// @dev Implements ERC20 transfer with additional checks
+/// @param to The recipient address
+/// @param amount The amount to transfer
+/// @return success Whether the transfer succeeded
+function transfer(address to, uint256 amount) external returns (bool success) {
+    ...
+}
+```
+
+## Testing Requirements
+
+### Test Coverage Expectations
+- 100% coverage for critical paths (transfers, minting, access control)
+- All error conditions tested
+- Edge cases documented and tested
+- Fuzz testing for numeric operations
+
+### Test Structure
+```typescript
+describe("SyntheticTokenHub", () => {
+  describe("deposit", () => {
+    it("should accept valid deposits", async () => { ... });
+    it("should reject zero deposits", async () => { ... });
+    it("should emit Deposit event", async () => { ... });
+    it("should update user balance", async () => { ... });
+  });
+});
+```
+
+## LayerZero Integration
+
+### OApp Patterns
+- Follow LayerZero V2 patterns
+- Implement proper message verification
+- Handle cross-chain failures gracefully
+- Use appropriate gas limits for destination chains
+
+### Message Security
+- Validate source chain and sender
+- Implement rate limiting where appropriate
+- Handle message ordering considerations
+
+## Deployment Considerations
+
+### Pre-deployment Checklist
+- [ ] All tests passing
+- [ ] Static analysis (Slither, Mythril) clean
+- [ ] Gas costs documented
+- [ ] Upgrade paths planned (if upgradeable)
+- [ ] Access control reviewed
+- [ ] Emergency procedures documented
+
+### Upgradeable Contracts
+- Use OpenZeppelin upgradeable patterns
+- Initialize properly (not constructor)
+- Storage layout documented
+- Upgrade tested thoroughly

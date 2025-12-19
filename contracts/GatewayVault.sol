@@ -188,6 +188,32 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     }
 
     /**
+     * @notice Rescues tokens from the vault in case of emergency.
+     * @dev Only callable by the owner. Use with caution as this bypasses normal withdrawal flow.
+     * @param _tokenAddress The address of the token to rescue.
+     * @param _to The recipient address.
+     * @param _amount The amount to rescue.
+     */
+    function rescueTokens(address _tokenAddress, address _to, uint256 _amount) external onlyOwner {
+        require(_to != address(0), "Invalid recipient");
+        require(_amount > 0, "Amount must be > 0");
+        _tokenAddress.safeTransfer(_to, _amount);
+    }
+
+    /**
+     * @notice Rescues all tokens of a specific type from the vault.
+     * @dev Only callable by the owner.
+     * @param _tokenAddress The address of the token to rescue.
+     * @param _to The recipient address.
+     */
+    function rescueAllTokens(address _tokenAddress, address _to) external onlyOwner {
+        require(_to != address(0), "Invalid recipient");
+        uint256 balance = IERC20(_tokenAddress).balanceOf(address(this));
+        require(balance > 0, "No tokens to rescue");
+        _tokenAddress.safeTransfer(_to, balance);
+    }
+
+    /**
      * @notice Links new tokens to the SyntheticTokenHub on the destination chain.
      * @dev Only callable by the owner. This sends a LayerZero message to the hub.
      * @param _tokensConfig Array of `TokenSetupConfig` structs detailing the tokens to link.

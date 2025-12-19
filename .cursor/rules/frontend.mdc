@@ -1,0 +1,239 @@
+---
+description: Frontend development best practices for React/Next.js applications
+globs:
+  - frontend/**/*.tsx
+  - frontend/**/*.ts
+  - frontend/**/*.css
+alwaysApply: false
+---
+
+# 🎨 Frontend Development Rules
+
+## React/Next.js Patterns
+
+### Component Structure
+```tsx
+// Component file structure
+// 1. Imports
+// 2. Types/Interfaces
+// 3. Component
+// 4. Styles (if CSS-in-JS)
+
+import { useState, useCallback } from 'react';
+import { useTokenBalances } from '@/hooks';
+
+interface TokenCardProps {
+  token: Token;
+  onSelect: (token: Token) => void;
+}
+
+export function TokenCard({ token, onSelect }: TokenCardProps) {
+  // 1. Hooks
+  const { balance } = useTokenBalances(token.address);
+  
+  // 2. Derived state
+  const formattedBalance = formatBalance(balance);
+  
+  // 3. Callbacks
+  const handleSelect = useCallback(() => {
+    onSelect(token);
+  }, [token, onSelect]);
+  
+  // 4. Effects (if any)
+  
+  // 5. Render
+  return ( ... );
+}
+```
+
+### Hook Patterns
+```tsx
+// Custom hooks should:
+// - Start with "use"
+// - Return consistent shapes
+// - Handle loading/error states
+
+export function useTokenApproval(tokenAddress: Address) {
+  const [isApproving, setIsApproving] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  
+  const approve = useCallback(async (spender: Address, amount: bigint) => {
+    setIsApproving(true);
+    setError(null);
+    try {
+      // ... approval logic
+    } catch (err) {
+      setError(err as Error);
+    } finally {
+      setIsApproving(false);
+    }
+  }, [tokenAddress]);
+  
+  return { approve, isApproving, error };
+}
+```
+
+## State Management
+
+### Local State
+- Use `useState` for simple component state
+- Use `useReducer` for complex state logic
+- Lift state only when necessary
+
+### Global State
+- Use React Context for theme/auth/settings
+- Keep contexts focused and small
+- Avoid putting rapidly changing data in context
+
+### Server State
+- Use appropriate data fetching patterns
+- Implement loading and error states
+- Cache when appropriate
+
+## Performance
+
+### Memoization
+```tsx
+// ✅ Memoize expensive computations
+const sortedTokens = useMemo(() => {
+  return tokens.sort((a, b) => b.balance - a.balance);
+}, [tokens]);
+
+// ✅ Memoize callbacks passed to children
+const handleClick = useCallback(() => {
+  selectToken(token);
+}, [token, selectToken]);
+
+// ❌ Don't memoize everything
+// Only memoize when there's a real benefit
+```
+
+### Component Optimization
+- Use `React.memo` for pure components with stable props
+- Split large components into smaller pieces
+- Lazy load heavy components
+
+### Rendering
+- Avoid inline object/array creation in JSX
+- Use keys properly in lists
+- Avoid unnecessary re-renders
+
+## Styling with Tailwind
+
+### Class Organization
+```tsx
+// Order: Layout → Spacing → Size → Typography → Colors → Effects → State
+<div className="
+  flex flex-col           // Layout
+  gap-4 p-6               // Spacing
+  w-full max-w-md         // Size
+  text-lg font-medium     // Typography
+  bg-gray-900 text-white  // Colors
+  rounded-xl shadow-lg    // Effects
+  hover:bg-gray-800       // States
+">
+```
+
+### Responsive Design
+- Mobile-first approach
+- Use Tailwind breakpoints consistently
+- Test on multiple screen sizes
+
+## Web3 Specific
+
+### Wallet Connection
+- Handle disconnection gracefully
+- Show loading states during transactions
+- Display clear error messages
+
+### Transaction UX
+```tsx
+// Always show:
+// 1. Transaction pending state
+// 2. Confirmation required
+// 3. Transaction submitted
+// 4. Transaction confirmed/failed
+
+function TransactionButton() {
+  const { status, txHash, error } = useTransaction();
+  
+  if (status === 'pending') return <Button disabled>Confirming...</Button>;
+  if (status === 'submitted') return <Button disabled>Processing...</Button>;
+  if (status === 'success') return <Success txHash={txHash} />;
+  if (status === 'error') return <Error message={error.message} />;
+  
+  return <Button onClick={execute}>Execute</Button>;
+}
+```
+
+### Number Formatting
+- Use proper BigInt handling
+- Format for human readability
+- Handle decimals correctly
+- Show full precision on hover
+
+## Error Handling
+
+### Error Boundaries
+- Wrap major sections in error boundaries
+- Provide meaningful fallback UI
+- Log errors for debugging
+
+### User-Friendly Errors
+```tsx
+// Map technical errors to user-friendly messages
+function getErrorMessage(error: Error): string {
+  if (error.message.includes('insufficient funds')) {
+    return 'You don\'t have enough tokens for this transaction.';
+  }
+  if (error.message.includes('user rejected')) {
+    return 'Transaction was cancelled.';
+  }
+  return 'Something went wrong. Please try again.';
+}
+```
+
+## Accessibility
+
+### Minimum Requirements
+- Semantic HTML elements
+- Proper heading hierarchy
+- Alt text for images
+- Keyboard navigation
+- Focus management
+
+### ARIA When Needed
+- Use ARIA labels for icon buttons
+- Announce dynamic content changes
+- Mark loading states appropriately
+
+## File Organization
+
+```
+frontend/
+├── app/                  # Next.js app router pages
+│   ├── layout.tsx
+│   └── page.tsx
+├── components/
+│   ├── design/          # UI primitives (Button, Card, etc.)
+│   ├── swap/            # Feature-specific components
+│   └── index.ts         # Clean exports
+├── hooks/               # Custom React hooks
+├── lib/                 # Utilities and helpers
+│   ├── contracts/       # Contract ABIs and addresses
+│   └── tokens/          # Token utilities
+└── contexts/            # React contexts
+```
+
+## Testing
+
+### Component Testing
+- Test user interactions
+- Test error states
+- Test loading states
+- Use Testing Library queries properly
+
+### Integration Testing
+- Test complete user flows
+- Mock Web3 providers
+- Test with different wallet states

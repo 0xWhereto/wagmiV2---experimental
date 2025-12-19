@@ -1,0 +1,131 @@
+---
+description: Blockchain indexer development rules
+globs:
+  - indexer/**/*.ts
+alwaysApply: false
+---
+
+# 📊 Indexer Development Rules
+
+## Architecture Principles
+
+### Event Processing
+- Process events idempotently
+- Handle chain reorganizations
+- Implement proper error recovery
+- Use batched writes for performance
+
+### Database Patterns
+```typescript
+// ✅ Use transactions for related updates
+async function processDeposit(event: DepositEvent) {
+  await db.transaction(async (tx) => {
+    await tx.insert(deposits).values(event);
+    await tx.update(balances)
+      .set({ amount: sql`amount + ${event.amount}` })
+      .where(eq(balances.user, event.user));
+  });
+}
+
+// ✅ Track last processed block
+async function getLastProcessedBlock(): Promise<bigint> {
+  const result = await db
+    .select({ block: indexerState.lastBlock })
+    .from(indexerState)
+    .limit(1);
+  return result[0]?.block ?? 0n;
+}
+```
+
+### Chain Reorg Handling
+```typescript
+// ✅ Mark entries with block info
+interface IndexedEvent {
+  id: string;
+  blockNumber: bigint;
+  blockHash: string;
+  transactionHash: string;
+  logIndex: number;
+  // ... event data
+}
+
+// ✅ Implement reorg recovery
+async function handleReorg(fromBlock: bigint) {
+  await db.delete(deposits)
+    .where(gte(deposits.blockNumber, fromBlock));
+  await reindexFromBlock(fromBlock);
+}
+```
+
+## Data Integrity
+
+### Validation
+- Validate all event data before storage
+- Check for duplicate entries
+- Verify block/transaction hashes match
+
+### Error Handling
+```typescript
+// ✅ Retry with exponential backoff
+async function processWithRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 5
+): Promise<T> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (i === maxRetries - 1) throw error;
+      await sleep(Math.pow(2, i) * 1000);
+    }
+  }
+  throw new Error('Unreachable');
+}
+```
+
+## API Design
+
+### REST Endpoints
+- Use proper HTTP methods
+- Implement pagination
+- Support filtering and sorting
+- Return consistent response shapes
+
+### Response Format
+```typescript
+// ✅ Consistent API responses
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+  };
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+```
+
+## Performance
+
+### Batching
+- Batch RPC calls when fetching logs
+- Batch database writes
+- Use connection pooling
+
+### Caching
+- Cache frequently accessed data
+- Invalidate cache on updates
+- Use appropriate TTLs
+
+## Monitoring
+
+### Essential Metrics
+- Current indexed block vs chain head
+- Events processed per second
+- Error rates and types
+- API response times

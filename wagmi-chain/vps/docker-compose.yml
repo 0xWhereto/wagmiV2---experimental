@@ -1,0 +1,162 @@
+# Wagmi Chain VPS Deployment
+# 
+# This docker-compose file sets up a persistent Wagmi Chain on a VPS
+#
+# Usage:
+#   docker compose up -d
+#
+# Services:
+#   - wagmi-chain: Anvil-based EVM chain
+#   - blockscout: Block explorer
+#   - postgres: Database for Blockscout
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # WAGMI CHAIN (Anvil with persistence)
+  # ============================================================================
+  wagmi-chain:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: wagmi-chain
+    ports:
+      - "${RPC_PORT:-8545}:8545"
+      - "${WS_PORT:-8546}:8545"
+    volumes:
+      - chain_data:/data
+    command: >
+      anvil
+      --host 0.0.0.0
+      --port 8545
+      --chain-id ${CHAIN_ID:-420420}
+      --block-time ${BLOCK_TIME:-1}
+      --accounts ${NUM_ACCOUNTS:-10}
+      --balance ${ACCOUNT_BALANCE:-10000}
+      --gas-limit ${GAS_LIMIT:-30000000}
+      --code-size-limit 100000
+      --state /data/state.json
+      --state-interval 60
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ============================================================================
+  # DATABASE (PostgreSQL for Blockscout)
+  # ============================================================================
+  postgres:
+    image: postgres:14-alpine
+    container_name: wagmi-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-blockscout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-blockscout}
+      POSTGRES_DB: ${POSTGRES_DB:-blockscout}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-blockscout}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # BLOCK EXPLORER (Blockscout)
+  # ============================================================================
+  blockscout:
+    image: blockscout/blockscout:latest
+    container_name: wagmi-explorer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      wagmi-chain:
+        condition: service_healthy
+    ports:
+      - "${EXPLORER_PORT:-4000}:4000"
+    environment:
+      # Database
+      DATABASE_URL: postgresql://${POSTGRES_USER:-blockscout}:${POSTGRES_PASSWORD:-blockscout}@postgres:5432/${POSTGRES_DB:-blockscout}
+      
+      # Network connection
+      ETHEREUM_JSONRPC_VARIANT: geth
+      ETHEREUM_JSONRPC_HTTP_URL: http://wagmi-chain:8545
+      ETHEREUM_JSONRPC_WS_URL: ws://wagmi-chain:8545
+      ETHEREUM_JSONRPC_TRACE_URL: http://wagmi-chain:8545
+      
+      # Chain info
+      CHAIN_ID: ${CHAIN_ID:-420420}
+      NETWORK: ${CHAIN_NAME:-Wagmi Chain}
+      SUBNETWORK: ${CHAIN_NAME:-Wagmi Chain}
+      COIN: ETH
+      COIN_NAME: Ether
+      
+      # Features
+      DISABLE_EXCHANGE_RATES: "true"
+      DISABLE_KNOWN_TOKENS: "true"
+      SHOW_TXS_CHART: "true"
+      ENABLE_TXS_STATS: "true"
+      
+      # Indexer settings
+      INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "false"
+      INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
+      INDEXER_DISABLE_CATALOGED_TOKEN_UPDATER_FETCHER: "true"
+      BLOCK_TRANSFORMER: base
+      
+      # Performance
+      POOL_SIZE: 50
+      POOL_SIZE_API: 10
+      ECTO_USE_SSL: "false"
+      
+      # UI Customization
+      LOGO: /images/wagmi-logo.svg
+      LOGO_FOOTER: /images/wagmi-logo.svg
+      SUPPORTED_CHAINS: "[]"
+      APPS_MENU: "false"
+      EXTERNAL_APPS: "[]"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ============================================================================
+  # CADDY (Reverse Proxy with Auto-SSL) - Optional
+  # ============================================================================
+  # Uncomment if you want HTTPS with a domain
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   container_name: wagmi-caddy
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   restart: always
+  #   depends_on:
+  #     - wagmi-chain
+  #     - blockscout
+
+volumes:
+  chain_data:
+    driver: local
+  postgres_data:
+    driver: local
+  # caddy_data:
+  # caddy_config:
+
+networks:
+  default:
+    name: wagmi-network
+

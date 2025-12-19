@@ -1,0 +1,208 @@
+---
+description: Script and automation development rules
+globs:
+  - scripts/**/*.ts
+alwaysApply: false
+---
+
+# 🔧 Script Development Rules
+
+## Script Structure
+
+### Standard Template
+```typescript
+import { parseArgs } from 'util';
+import { config } from 'dotenv';
+
+config();
+
+async function main() {
+  // Parse arguments
+  const { values } = parseArgs({
+    options: {
+      network: { type: 'string', short: 'n', default: 'localhost' },
+      dryRun: { type: 'boolean', short: 'd', default: false },
+    },
+  });
+
+  console.log('Starting script...');
+  console.log('Network:', values.network);
+  console.log('Dry run:', values.dryRun);
+
+  // Main logic here
+  
+  console.log('Script completed successfully');
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error('Script failed:', error);
+    process.exit(1);
+  });
+```
+
+## Safety Practices
+
+### Confirmation for Destructive Operations
+```typescript
+import * as readline from 'readline';
+
+async function confirmAction(message: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`${message} (y/N): `, (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === 'y');
+    });
+  });
+}
+
+// Usage
+if (!dryRun) {
+  const confirmed = await confirmAction('This will modify production data. Continue?');
+  if (!confirmed) {
+    console.log('Aborted by user');
+    process.exit(0);
+  }
+}
+```
+
+### Dry Run Mode
+```typescript
+// ✅ Always support dry-run for scripts with side effects
+async function deployContract(config: DeployConfig, dryRun = false) {
+  console.log('Deploy config:', config);
+  
+  if (dryRun) {
+    console.log('[DRY RUN] Would deploy with:', config);
+    return { address: '0x...(simulated)' };
+  }
+  
+  // Actual deployment
+  return await deploy(config);
+}
+```
+
+## Logging
+
+### Structured Output
+```typescript
+// ✅ Use consistent logging
+const log = {
+  info: (msg: string, data?: object) => 
+    console.log(`ℹ️  ${msg}`, data ? JSON.stringify(data, null, 2) : ''),
+  success: (msg: string, data?: object) => 
+    console.log(`✅ ${msg}`, data ? JSON.stringify(data, null, 2) : ''),
+  warn: (msg: string, data?: object) => 
+    console.warn(`⚠️  ${msg}`, data ? JSON.stringify(data, null, 2) : ''),
+  error: (msg: string, data?: object) => 
+    console.error(`❌ ${msg}`, data ? JSON.stringify(data, null, 2) : ''),
+};
+
+// Usage
+log.info('Starting deployment');
+log.success('Contract deployed', { address: contractAddress });
+log.warn('Low gas price detected', { gasPrice: '10 gwei' });
+log.error('Transaction failed', { hash: txHash, error: err.message });
+```
+
+## Hardhat Script Patterns
+
+### Task Definition
+```typescript
+import { task, types } from 'hardhat/config';
+
+task('deploy-token', 'Deploys the synthetic token')
+  .addParam('name', 'Token name', undefined, types.string)
+  .addParam('symbol', 'Token symbol', undefined, types.string)
+  .addOptionalParam('hub', 'Hub address', undefined, types.string)
+  .addFlag('verify', 'Verify on explorer')
+  .setAction(async (taskArgs, hre) => {
+    const { name, symbol, hub, verify } = taskArgs;
+    
+    // Deployment logic
+  });
+```
+
+### Using Signers
+```typescript
+async function main() {
+  const [deployer, admin, user] = await ethers.getSigners();
+  
+  console.log('Deployer:', deployer.address);
+  console.log('Balance:', formatEther(await deployer.getBalance()));
+  
+  // Verify sufficient balance
+  const requiredBalance = parseEther('0.1');
+  if ((await deployer.getBalance()) < requiredBalance) {
+    throw new Error('Insufficient balance for deployment');
+  }
+}
+```
+
+## Transaction Handling
+
+### Wait for Confirmations
+```typescript
+async function sendTxWithRetry(tx: TransactionRequest, confirmations = 2) {
+  const response = await signer.sendTransaction(tx);
+  console.log('Transaction sent:', response.hash);
+  
+  const receipt = await response.wait(confirmations);
+  console.log('Confirmed in block:', receipt.blockNumber);
+  
+  return receipt;
+}
+```
+
+### Gas Estimation
+```typescript
+async function estimateAndExecute(contract: Contract, method: string, args: any[]) {
+  const gasEstimate = await contract.estimateGas[method](...args);
+  const gasWithBuffer = gasEstimate * 120n / 100n; // 20% buffer
+  
+  console.log(`Gas estimate: ${gasEstimate} (using ${gasWithBuffer})`);
+  
+  return await contract[method](...args, { gasLimit: gasWithBuffer });
+}
+```
+
+## Environment Handling
+
+### Required Variables
+```typescript
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+// Usage
+const PRIVATE_KEY = requireEnv('PRIVATE_KEY');
+const RPC_URL = requireEnv('RPC_URL');
+```
+
+### Network Configuration
+```typescript
+function getNetworkConfig(network: string) {
+  const configs: Record<string, NetworkConfig> = {
+    mainnet: { rpcUrl: '...', chainId: 1 },
+    sepolia: { rpcUrl: '...', chainId: 11155111 },
+    localhost: { rpcUrl: 'http://127.0.0.1:8545', chainId: 31337 },
+  };
+  
+  const config = configs[network];
+  if (!config) {
+    throw new Error(`Unknown network: ${network}. Available: ${Object.keys(configs).join(', ')}`);
+  }
+  
+  return config;
+}
+```

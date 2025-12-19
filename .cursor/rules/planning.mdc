@@ -1,0 +1,111 @@
+---
+description: Planning workflow - Transform feature ideas into structured implementation plans
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# 🎯 PLANNING PHASE - Compound Engineering Workflow
+
+When the user asks to "plan", "design", or "architect" a feature, follow this structured planning process:
+
+## Step 1: Codebase Research
+Before proposing any implementation:
+- **Analyze existing patterns**: Search the codebase for similar implementations
+- **Identify conventions**: Note naming conventions, file structure, and architectural patterns
+- **Find dependencies**: Understand what libraries/frameworks are already in use
+- **Map relationships**: Understand how components interact
+
+## Step 2: Create Structured Plan
+
+Generate a detailed plan with these sections:
+
+### 📋 Feature Summary
+- Clear, concise description of what will be built
+- User story format: "As a [user], I want [feature], so that [benefit]"
+
+### ✅ Acceptance Criteria
+- Numbered list of specific, testable criteria
+- Each criterion should be verifiable
+- Include edge cases and error scenarios
+
+### 🏗️ Technical Approach
+- High-level architecture decisions
+- Data flow diagrams (if complex)
+- API contracts (if applicable)
+- State management approach
+
+### 📁 Files to Create/Modify
+- Explicit list of files with brief description of changes
+- Organized by: New Files, Modified Files, Deleted Files
+
+### 🔗 Dependencies
+- New packages/libraries needed
+- Internal dependencies between tasks
+
+### ⚠️ Risks & Considerations
+- Potential breaking changes
+- Performance implications
+- Security considerations
+- Migration requirements
+
+### 📝 Task Breakdown
+Create atomic, actionable tasks:
+1. Each task should be completable in < 30 minutes
+2. Tasks should be ordered by dependency
+3. Include estimated complexity (S/M/L)
+4. Mark which tasks need tests
+
+## Step 3: Validation Questions
+Ask clarifying questions about:
+- Ambiguous requirements
+- Missing acceptance criteria
+- Potential conflicts with existing code
+- Performance/scale requirements
+
+## Planning Output Format
+
+```markdown
+# Feature: [Feature Name]
+
+## Summary
+[1-2 sentence description]
+
+## User Story
+As a [user type], I want [action], so that [benefit].
+
+## Acceptance Criteria
+- [ ] AC1: [Specific testable criterion]
+- [ ] AC2: [Specific testable criterion]
+- [ ] AC3: [Specific testable criterion]
+
+## Technical Approach
+[Detailed technical explanation]
+
+## Implementation Plan
+
+### Phase 1: [Foundation]
+| Task | Files | Complexity | Tests |
+|------|-------|------------|-------|
+| [Task 1] | [files] | S/M/L | ✓/✗ |
+
+### Phase 2: [Core Implementation]
+| Task | Files | Complexity | Tests |
+|------|-------|------------|-------|
+| [Task 2] | [files] | S/M/L | ✓/✗ |
+
+## Risks & Mitigations
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| [Risk 1] | High/Med/Low | [Strategy] |
+
+## Questions for Clarification
+1. [Question about requirements]
+2. [Question about edge cases]
+```
+
+## Key Principles
+- **No speculation**: Only propose what can be supported by codebase analysis
+- **Incremental delivery**: Break work into shippable increments
+- **Test-first mindset**: Every feature should have corresponding tests planned
+- **Document decisions**: Capture why, not just what

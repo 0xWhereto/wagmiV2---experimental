@@ -16,7 +16,7 @@ const config: HardhatUserConfig = {
     alphaSort: true,
     disambiguatePaths: false,
     runOnCompile: true,
-    strict: true,
+    strict: false, // Allow oversized contracts for Sonic deployment
     only: ["GatewayVault", "SyntheticTokenHub"],
   },
   paths: {
@@ -43,10 +43,12 @@ const config: HardhatUserConfig = {
   networks: {
     hardhat: {
       chainId: 1,
-      forking: {
-        url: process.env.RPC_URL ?? "",
-        blockNumber: 17329500,
-      },
+      forking: process.env.RPC_URL
+        ? {
+            url: process.env.RPC_URL,
+            blockNumber: 17329500,
+          }
+        : undefined,
       allowBlocksWithSameTimestamp: true,
       allowUnlimitedContractSize: true,
       blockGasLimit: 40000000,
@@ -106,6 +108,30 @@ const config: HardhatUserConfig = {
       gasMultiplier: 1.2,
       gasPrice: "auto",
       accounts: [`${process.env.PRIVATE_KEY}`],
+    },
+    ethereum: {
+      eid: EndpointId.ETHEREUM_V2_MAINNET,
+      url: "https://ethereum-rpc.publicnode.com",
+      chainId: 1,
+      gas: "auto",
+      gasMultiplier: 1.2,
+      gasPrice: "auto",
+      accounts: [`${process.env.PRIVATE_KEY}`],
+    },
+    // =========================================================================
+    // WAGMI CHAIN (Local Development)
+    // Start with: cd wagmi-chain/local && ./start.sh
+    // =========================================================================
+    "wagmi-local": {
+      url: "http://localhost:8545",
+      chainId: 420420,
+      gas: "auto",
+      gasMultiplier: 1.2,
+      gasPrice: "auto",
+      // Default Anvil account - DO NOT USE IN PRODUCTION
+      accounts: [
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+      ],
     },
   },
   mocha: {

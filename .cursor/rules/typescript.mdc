@@ -1,0 +1,267 @@
+---
+description: TypeScript best practices and patterns
+globs:
+  - "**/*.ts"
+  - "**/*.tsx"
+alwaysApply: false
+---
+
+# 📘 TypeScript Rules
+
+## Type Safety
+
+### Strict Mode
+- Enable `strict: true` in tsconfig
+- Never use `any` without explicit reason
+- Avoid `as` type assertions when possible
+- Use type guards instead of assertions
+
+### Type Definitions
+```typescript
+// ✅ Use interfaces for objects
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+// ✅ Use type for unions, primitives, and utilities
+type Status = 'pending' | 'success' | 'error';
+type UserId = string;
+type PartialUser = Partial<User>;
+
+// ✅ Use enums sparingly, prefer const objects
+const TokenType = {
+  NATIVE: 'native',
+  ERC20: 'erc20',
+  ERC721: 'erc721',
+} as const;
+type TokenType = typeof TokenType[keyof typeof TokenType];
+```
+
+### Generics
+```typescript
+// ✅ Use generics for reusable utilities
+function fetcher<T>(url: string): Promise<T> {
+  return fetch(url).then(res => res.json());
+}
+
+// ✅ Constrain generics when needed
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+```
+
+## Function Patterns
+
+### Function Types
+```typescript
+// ✅ Explicit return types for public functions
+export function calculateFee(amount: bigint, bps: number): bigint {
+  return (amount * BigInt(bps)) / BigInt(10000);
+}
+
+// ✅ Arrow functions for callbacks
+const handleClick = (e: React.MouseEvent) => {
+  e.preventDefault();
+};
+
+// ✅ Async functions with proper types
+async function fetchToken(address: Address): Promise<Token | null> {
+  try {
+    const response = await fetch(`/api/tokens/${address}`);
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+```
+
+### Optional Parameters
+```typescript
+// ✅ Use optional parameters and defaults
+function formatAmount(
+  amount: bigint,
+  decimals: number = 18,
+  options?: { compact?: boolean; symbol?: string }
+): string {
+  // ...
+}
+
+// ✅ Use object params for multiple options
+interface TransferOptions {
+  gasLimit?: bigint;
+  gasPrice?: bigint;
+  nonce?: number;
+}
+
+function transfer(to: Address, amount: bigint, options?: TransferOptions) {
+  // ...
+}
+```
+
+## Type Guards
+
+### Custom Type Guards
+```typescript
+// ✅ Use type predicates
+function isAddress(value: unknown): value is Address {
+  return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value);
+}
+
+function isERC20Token(token: Token): token is ERC20Token {
+  return token.type === 'erc20' && 'decimals' in token;
+}
+
+// ✅ Use assertion functions
+function assertDefined<T>(value: T | undefined | null, message?: string): asserts value is T {
+  if (value === undefined || value === null) {
+    throw new Error(message ?? 'Value is not defined');
+  }
+}
+```
+
+### Discriminated Unions
+```typescript
+// ✅ Use discriminated unions for state
+type TransactionState =
+  | { status: 'idle' }
+  | { status: 'pending'; txHash: string }
+  | { status: 'success'; txHash: string; receipt: TransactionReceipt }
+  | { status: 'error'; error: Error };
+
+function handleTransaction(state: TransactionState) {
+  switch (state.status) {
+    case 'idle':
+      return 'Ready';
+    case 'pending':
+      return `Pending: ${state.txHash}`;
+    case 'success':
+      return `Confirmed in block ${state.receipt.blockNumber}`;
+    case 'error':
+      return `Error: ${state.error.message}`;
+  }
+}
+```
+
+## Utility Types
+
+### Common Patterns
+```typescript
+// Pick specific fields
+type TokenSummary = Pick<Token, 'address' | 'symbol' | 'decimals'>;
+
+// Omit unwanted fields
+type PublicUser = Omit<User, 'password' | 'email'>;
+
+// Make fields optional
+type UpdateUserDTO = Partial<User>;
+
+// Make fields required
+type RequiredToken = Required<Token>;
+
+// Extract from union
+type SuccessState = Extract<TransactionState, { status: 'success' }>;
+```
+
+### Web3 Specific Types
+```typescript
+// ✅ Use viem types
+import type { Address, Hash, Hex } from 'viem';
+
+interface Transaction {
+  hash: Hash;
+  from: Address;
+  to: Address;
+  value: bigint;
+  data: Hex;
+}
+
+// ✅ BigInt for token amounts
+interface TokenAmount {
+  token: Token;
+  amount: bigint;
+  formatted: string;
+}
+```
+
+## Module Organization
+
+### Exports
+```typescript
+// ✅ Named exports for most things
+export function formatAmount() { ... }
+export interface Token { ... }
+export const TOKENS = { ... };
+
+// ✅ Re-export from index for clean imports
+// lib/tokens/index.ts
+export * from './types';
+export * from './utils';
+export * from './constants';
+
+// ✅ Default export only for React components and pages
+export default function TokenPage() { ... }
+```
+
+### Imports
+```typescript
+// ✅ Organize imports
+// 1. External packages
+import { useState, useEffect } from 'react';
+import { formatUnits } from 'viem';
+
+// 2. Internal absolute imports
+import { Button } from '@/components';
+import { useTokenBalance } from '@/hooks';
+
+// 3. Relative imports
+import { TokenCard } from './TokenCard';
+import type { TokenListProps } from './types';
+```
+
+## Error Handling
+
+### Typed Errors
+```typescript
+// ✅ Create specific error classes
+class InsufficientBalanceError extends Error {
+  constructor(
+    public readonly available: bigint,
+    public readonly required: bigint
+  ) {
+    super(`Insufficient balance: have ${available}, need ${required}`);
+    this.name = 'InsufficientBalanceError';
+  }
+}
+
+// ✅ Use Result types for recoverable errors
+type Result<T, E = Error> =
+  | { success: true; data: T }
+  | { success: false; error: E };
+
+async function safeTransfer(to: Address, amount: bigint): Promise<Result<Hash>> {
+  try {
+    const hash = await transfer(to, amount);
+    return { success: true, data: hash };
+  } catch (error) {
+    return { success: false, error: error as Error };
+  }
+}
+```
+
+## Best Practices
+
+### Do's
+- ✅ Use `readonly` for immutable data
+- ✅ Use `as const` for literal types
+- ✅ Use template literal types when useful
+- ✅ Document complex types with JSDoc
+- ✅ Use branded types for domain primitives
+
+### Don'ts
+- ❌ Use `any` without documentation
+- ❌ Use `@ts-ignore` without comment
+- ❌ Create overly complex generic types
+- ❌ Use classes where functions suffice
+- ❌ Over-engineer type utilities
