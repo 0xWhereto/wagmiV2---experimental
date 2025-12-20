@@ -1,53 +1,40 @@
 import { ethers } from "hardhat";
 
-// Check the transaction from LayerZero scan
-const TX_HASH = "0x04c5e609b43b43e899b0640882bce2bf31b17777c615d2616b67843241f2ecd6";
+// Check the link token message status
+const LINK_TX = "0xd1d18a70bd129071b7ac91eff917634d01057557b01f60c5863f9691619e5fe9";
 
 async function main() {
-  // Check which chain this tx is from based on the gateway used
-  const arbProvider = new ethers.providers.JsonRpcProvider("https://arb1.arbitrum.io/rpc");
-  const ethProvider = new ethers.providers.JsonRpcProvider("https://ethereum-rpc.publicnode.com");
+  console.log("=== CHECKING LZ MESSAGE STATUS ===\n");
+  console.log("Link TX: " + LINK_TX);
+  console.log("\nCheck on LayerZero Scan:");
+  console.log("https://layerzeroscan.com/tx/" + LINK_TX);
   
-  console.log("=== Checking Transaction ===\n");
+  // Also check if WETH, USDC, USDT are already linked (would cause revert)
+  const HUB_GETTERS = "0x6860dE88abb940F3f4Ff63F0DEEc3A78b9a8141e";
+  const ARBITRUM_EID = 30110;
   
-  // Try Arbitrum first
-  try {
-    const tx = await arbProvider.getTransaction(TX_HASH);
-    if (tx) {
-      console.log("Found on Arbitrum!");
-      console.log(`From: ${tx.from}`);
-      console.log(`To: ${tx.to}`);
-      console.log(`Value: ${ethers.utils.formatEther(tx.value)} ETH`);
-      console.log(`Block: ${tx.blockNumber}`);
-      
-      const receipt = await arbProvider.getTransactionReceipt(TX_HASH);
-      console.log(`Status: ${receipt?.status === 1 ? "✅ Success" : "❌ Failed"}`);
-      console.log(`Logs: ${receipt?.logs.length}`);
-      return;
+  const hubGetters = await ethers.getContractAt("SyntheticTokenHubGetters", HUB_GETTERS);
+  
+  const tokens = [
+    { name: "WETH", address: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1" },
+    { name: "USDT", address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9" },
+    { name: "USDC", address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" },
+    { name: "WBTC", address: "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f" },
+  ];
+  
+  console.log("\n--- Checking existing links on Hub ---");
+  for (const t of tokens) {
+    try {
+      const synthetic = await hubGetters.getSyntheticAddressByRemoteAddress(ARBITRUM_EID, t.address);
+      if (synthetic === ethers.constants.AddressZero) {
+        console.log(`${t.name}: NOT linked`);
+      } else {
+        console.log(`${t.name}: linked to ${synthetic}`);
+      }
+    } catch (e) {
+      console.log(`${t.name}: error`);
     }
-  } catch (e) {
-    console.log("Not on Arbitrum");
   }
-  
-  // Try Ethereum
-  try {
-    const tx = await ethProvider.getTransaction(TX_HASH);
-    if (tx) {
-      console.log("Found on Ethereum!");
-      console.log(`From: ${tx.from}`);
-      console.log(`To: ${tx.to}`);
-      console.log(`Value: ${ethers.utils.formatEther(tx.value)} ETH`);
-      console.log(`Block: ${tx.blockNumber}`);
-      
-      const receipt = await ethProvider.getTransactionReceipt(TX_HASH);
-      console.log(`Status: ${receipt?.status === 1 ? "✅ Success" : "❌ Failed"}`);
-      return;
-    }
-  } catch (e) {
-    console.log("Not on Ethereum");
-  }
-  
-  console.log("Transaction not found on Arbitrum or Ethereum");
 }
 
 main().catch(console.error);

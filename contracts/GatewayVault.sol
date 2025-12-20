@@ -188,6 +188,24 @@ contract GatewayVault is OApp, OAppOptionsType3 {
     }
 
     /**
+     * @notice Updates the synthetic token address for an already registered token.
+     * @dev Only callable by the owner. Use this to fix tokens registered with wrong synthetic address.
+     * @param _tokenAddress The address of the original token on this chain.
+     * @param _syntheticTokenAddress The new synthetic token address on the destination chain.
+     * @param _syntheticTokenDecimals The decimals of the synthetic token.
+     */
+    function updateSyntheticTokenAddress(
+        address _tokenAddress, 
+        address _syntheticTokenAddress,
+        uint8 _syntheticTokenDecimals
+    ) external onlyOwner {
+        uint256 _index = getTokenIndex(_tokenAddress);
+        uint8 tokenDecimals = IERC20Metadata(_tokenAddress).decimals();
+        availableTokens[_index].syntheticTokenAddress = _syntheticTokenAddress;
+        availableTokens[_index].decimalsDelta = int8(_syntheticTokenDecimals) - int8(tokenDecimals);
+    }
+
+    /**
      * @notice Rescues tokens from the vault in case of emergency.
      * @dev Only callable by the owner. Use with caution as this bypasses normal withdrawal flow.
      * @param _tokenAddress The address of the token to rescue.
