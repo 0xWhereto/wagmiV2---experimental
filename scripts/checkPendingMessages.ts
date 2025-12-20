@@ -1,89 +1,65 @@
-import hardhat, { ethers } from "hardhat";
+import { ethers } from "hardhat";
 
-/**
- * Check for pending/failed LayerZero messages on the Hub
- */
-
-const HUB_ADDRESS = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
-const LZ_ENDPOINT = "0x6F475642a6e85809B1c36Fa62763669b1b48DD5B";
-const ARBITRUM_EID = 30110;
-const ARBITRUM_GATEWAY = "0xb867d9E9D374E8b1165bcDF6D3f66d1A9AAd2447";
-
-// EndpointV2 ABI for checking message status
-const ENDPOINT_ABI = [
-  // Nonces
-  "function inboundNonce(address receiver, uint32 srcEid, bytes32 sender) view returns (uint64)",
-  "function lazyInboundNonce(address receiver, uint32 srcEid, bytes32 sender) view returns (uint64)",
-  // Payload hash (for failed messages)
-  "function inboundPayloadHash(address receiver, uint32 srcEid, bytes32 sender, uint64 nonce) view returns (bytes32)",
-];
-
-function addressToBytes32(address: string): string {
-  return ethers.utils.hexZeroPad(address, 32);
-}
+const HUB = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
+const LZ_ENDPOINT_SONIC = "0xe1844c5D63a9543023008D332Bd3d2e6f1FE1043";
+const ARB_EID = 30110;
 
 async function main() {
-  const network = hardhat.network.name;
-  if (network !== "sonic") {
-    console.log("This script should be run on Sonic network");
-    return;
-  }
-
-  console.log(`\n========================================`);
-  console.log(`Checking Pending Messages on SONIC Hub`);
-  console.log(`========================================`);
-
-  const endpoint = await ethers.getContractAt(ENDPOINT_ABI, LZ_ENDPOINT);
-  const senderBytes32 = addressToBytes32(ARBITRUM_GATEWAY);
-
-  // Get current nonces
-  const inboundNonce = await endpoint.inboundNonce(HUB_ADDRESS, ARBITRUM_EID, senderBytes32);
-  const lazyNonce = await endpoint.lazyInboundNonce(HUB_ADDRESS, ARBITRUM_EID, senderBytes32);
+  console.log("=== CHECKING LZ MESSAGE STATUS ===\n");
   
-  console.log(`\nInbound nonce: ${inboundNonce}`);
-  console.log(`Lazy inbound nonce: ${lazyNonce}`);
+  const provider = new ethers.providers.JsonRpcProvider("https://rpc.soniclabs.com");
   
-  // Check payload hashes for each nonce
-  console.log("\n--- Checking payload hashes for each message ---");
+  // Check the LZ Endpoint for pending inbound messages
+  const endpointAbi = [
+    "function inboundNonce(address _receiver, uint32 _srcEid, bytes32 _sender) view returns (uint64)",
+    "function lazyInboundNonce(address _receiver, uint32 _srcEid, bytes32 _sender) view returns (uint64)",
+  ];
   
-  for (let nonce = 1n; nonce <= inboundNonce; nonce++) {
-    try {
-      const payloadHash = await endpoint.inboundPayloadHash(HUB_ADDRESS, ARBITRUM_EID, senderBytes32, nonce);
-      console.log(`\nNonce ${nonce}:`);
-      console.log(`  Payload hash: ${payloadHash}`);
-      
-      if (payloadHash === ethers.constants.HashZero) {
-        console.log(`  Status: ✓ Successfully executed (no pending payload)`);
-      } else {
-        console.log(`  Status: ⚠️ PENDING/FAILED - Has stored payload hash!`);
-        console.log(`  This message needs to be retried or cleared.`);
-      }
-    } catch (e: any) {
-      console.log(`\nNonce ${nonce}: Error - ${e.message?.slice(0, 80)}`);
+  const endpoint = new ethers.Contract(LZ_ENDPOINT_SONIC, endpointAbi, provider);
+  
+  // The sender is the Gateway on Arbitrum
+  const GATEWAY_ARB = "0x187ddD9a94236Ba6d22376eE2E3C4C834e92f34e";
+  const senderBytes32 = ethers.utils.hexZeroPad(GATEWAY_ARB, 32);
+  
+  console.log(`Checking messages from Arbitrum Gateway to Hub...`);
+  console.log(`Sender: ${senderBytes32}`);
+  
+  try {
+    const inboundNonce = await endpoint.inboundNonce(HUB, ARB_EID, senderBytes32);
+    console.log(`Inbound nonce (delivered): ${inboundNonce.toString()}`);
+    
+    const lazyNonce = await endpoint.lazyInboundNonce(HUB, ARB_EID, senderBytes32);
+    console.log(`Lazy inbound nonce (pending): ${lazyNonce.toString()}`);
+    
+    if (lazyNonce.gt(inboundNonce)) {
+      console.log(`\n⚠️ There are ${lazyNonce.sub(inboundNonce).toString()} pending messages!`);
+    } else {
+      console.log("\n✅ No pending messages - all delivered");
     }
+  } catch (e: any) {
+    console.log(`Error: ${e.message?.slice(0, 100)}`);
   }
-
-  // Diagnosis
-  console.log("\n========================================");
-  console.log("DIAGNOSIS:");
-  if (inboundNonce > lazyNonce) {
-    console.log(`There are ${Number(inboundNonce) - Number(lazyNonce)} messages that haven't been fully processed.`);
+  
+  // Also check recent events on Hub
+  console.log("\n=== RECENT DEPOSITS ON HUB ===");
+  const hubAbi = [
+    "event Deposited(address indexed user, address indexed syntheticToken, uint256 amount)"
+  ];
+  const hub = new ethers.Contract(HUB, hubAbi, provider);
+  
+  const latestBlock = await provider.getBlockNumber();
+  const filter = hub.filters.Deposited();
+  
+  try {
+    const events = await hub.queryFilter(filter, latestBlock - 10000, latestBlock);
+    console.log(`Found ${events.length} deposit events in last 10000 blocks`);
+    
+    for (const e of events.slice(-5)) {
+      console.log(`  Block ${e.blockNumber}: ${ethers.utils.formatUnits(e.args?.amount || 0, 6)} to ${e.args?.user?.slice(0, 10)}...`);
+    }
+  } catch (e: any) {
+    console.log(`Error fetching events: ${e.message?.slice(0, 100)}`);
   }
-  console.log("\nIf payload hash is non-zero, the message execution failed.");
-  console.log("Options:");
-  console.log("1. Fix the issue and retry the message via lzReceive");
-  console.log("2. Skip the message (skip the nonce)");
-  console.log("3. Clear the message (requires the original payload)");
-  console.log("\nTo retry failed messages, you need to call lzReceive with:");
-  console.log("- origin (srcEid, sender, nonce)");
-  console.log("- guid");
-  console.log("- original message payload");
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
-
+main().catch(console.error);

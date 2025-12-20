@@ -1,35 +1,28 @@
 import { ethers } from "hardhat";
 
-const HUB_ADDRESS = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
+const HUB = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
 
 async function main() {
-  const [deployer] = await ethers.getSigners();
-  const code = await deployer.provider!.getCode(HUB_ADDRESS);
+  console.log("=== CHECKING HUB FUNCTIONS ===\n");
+  
+  const provider = new ethers.providers.JsonRpcProvider("https://rpc.soniclabs.com");
   
   // Function selectors to check
-  const funcs = [
-    "function setPeer(uint32,bytes32)",
-    "function setGatewayVault(uint32,address)",
-    "function linkRemoteToken(address,uint32,address,address,int8,uint256)",
-    "function manualLinkRemoteToken(address,uint32,address,address,int8,uint256)",
-    "function registerGateway(uint32,address)",
-    "function updateGateway(uint32,address)",
-    "function setDelegate(address)",
-    "function bridgeTokens(address,uint256,uint32,bytes)",
-    "function createSyntheticToken(string,uint8)",
-    "function setBalancer(address)",
-    "function adminRescueFromGateway(uint32,address[],bytes)",
-    "function pause()",
-    "function unpause()",
+  const functions = [
+    { name: "adminRescueFromGateway", selector: "0x" + ethers.utils.id("adminRescueFromGateway(uint32,address,(address,uint256)[],bytes)").slice(2, 10) },
+    { name: "quoteAdminRescue", selector: "0x" + ethers.utils.id("quoteAdminRescue(uint32,address,(address,uint256)[],bytes)").slice(2, 10) },
+    { name: "createSyntheticToken", selector: "0x" + ethers.utils.id("createSyntheticToken(string,uint8)").slice(2, 10) },
+    { name: "setBalancer", selector: "0x" + ethers.utils.id("setBalancer(address)").slice(2, 10) },
   ];
-
-  console.log("Checking which functions exist in deployed Hub:\n");
-
-  for (const sig of funcs) {
-    const iface = new ethers.utils.Interface([sig]);
-    const selector = iface.getSighash(sig.split(" ")[1].split("(")[0]);
-    const exists = code.toLowerCase().includes(selector.substring(2).toLowerCase());
-    console.log(`${exists ? "✅" : "❌"} ${sig.split(" ")[1].split("(")[0]}: ${selector} - ${exists ? "EXISTS" : "NOT FOUND"}`);
+  
+  const hubCode = await provider.getCode(HUB);
+  console.log(`Hub code length: ${hubCode.length}`);
+  
+  for (const fn of functions) {
+    // Check if selector exists in bytecode
+    const selectorHex = fn.selector.slice(2);
+    const exists = hubCode.toLowerCase().includes(selectorHex.toLowerCase());
+    console.log(`${fn.name} (${fn.selector}): ${exists ? "✅ EXISTS" : "❌ NOT FOUND"}`);
   }
 }
 
