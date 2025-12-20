@@ -251,6 +251,55 @@ contract SyntheticTokenHub is OApp, OAppOptionsType3 {
     }
 
     /**
+     * @notice Admin function to mint synthetic tokens directly.
+     * @dev Only callable by owner. Used to recover from stuck bridge situations.
+     * @param _syntheticToken The synthetic token address to mint
+     * @param _to The recipient address
+     * @param _amount The amount to mint
+     */
+    function adminMint(
+        address _syntheticToken,
+        address _to,
+        uint256 _amount
+    ) external onlyOwner {
+        require(_syntheticToken != address(0), "Invalid token");
+        require(_to != address(0), "Invalid recipient");
+        require(_amount > 0, "Amount must be > 0");
+        
+        // Verify this is a valid synthetic token managed by this hub
+        ISyntheticToken token = ISyntheticToken(_syntheticToken);
+        uint256 tokenIndex = token.tokenIndex();
+        require(_syntheticTokens[tokenIndex].tokenAddress == _syntheticToken, "Not a valid synthetic token");
+        
+        // Mint tokens
+        token.mint(_to, _amount);
+        
+        emit AdminMint(_syntheticToken, _to, _amount);
+    }
+
+    /**
+     * @notice Admin function to transfer ownership of a synthetic token.
+     * @dev Used for migration to a new hub.
+     * @param _syntheticToken The synthetic token address
+     * @param _newOwner The new owner address
+     */
+    function transferSyntheticTokenOwnership(
+        address _syntheticToken,
+        address _newOwner
+    ) external onlyOwner {
+        require(_syntheticToken != address(0), "Invalid token");
+        require(_newOwner != address(0), "Invalid new owner");
+        
+        // Cast to Ownable to call transferOwnership
+        Ownable(_syntheticToken).transferOwnership(_newOwner);
+        
+        emit SyntheticTokenOwnershipTransferred(_syntheticToken, _newOwner);
+    }
+
+    event AdminMint(address indexed syntheticToken, address indexed to, uint256 amount);
+    event SyntheticTokenOwnershipTransferred(address indexed syntheticToken, address indexed newOwner);
+
+    /**
      * @notice Creates and adds a new synthetic token
      * @param _symbol Token symbol
      * @param _decimals Token decimals
