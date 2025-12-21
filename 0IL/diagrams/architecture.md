@@ -233,26 +233,76 @@ graph LR
                         Layer 1 (40%)
 ```
 
-## Value Flow
+## Weekly Fee Payment Flow
 
 ```mermaid
-flowchart LR
-    subgraph Revenue Sources
-        TF[Trading Fees]
-        BI[Borrow Interest]
+sequenceDiagram
+    participant Keeper
+    participant 0IL as 0IL Pool
+    participant sMIM as sMIM Vault
+    participant Treasury
+    participant wToken as wToken Holders
+    
+    Note over Keeper: Week ends
+    
+    Keeper->>0IL: payWeeklyInterest()
+    0IL->>0IL: collectAllFees()
+    
+    0IL->>sMIM: getPoolWeeklyInterest()
+    sMIM-->>0IL: Expected: $1000
+    
+    alt Fees >= Expected Interest
+        0IL->>sMIM: payWeeklyInterest($1000)
+        sMIM->>Treasury: 15% fee ($150)
+        sMIM->>sMIM: 85% to stakers ($850)
+        
+        Note over 0IL: Remaining fees
+        0IL->>Treasury: 15% fee
+        0IL->>wToken: 85% to holders
+    else Fees < Expected Interest
+        0IL->>sMIM: payWeeklyInterest(ALL fees)
+        Note over wToken: Get NOTHING this week
+    end
+```
+
+## Value Flow (Priority Waterfall)
+
+```mermaid
+flowchart TB
+    subgraph "0IL Pool Trading Fees"
+        TF[All Fees in MIM]
     end
     
-    subgraph Distribution
-        direction TB
-        TF -->|compound| LP[LP Value]
-        BI -->|90%| sMIM[sMIM Holders]
-        BI -->|10%| TR[Treasury]
+    TF -->|PRIORITY| sMIM_INT[sMIM Weekly Interest]
+    
+    sMIM_INT -->|85%| sMIM_HOLDERS[sMIM Holders]
+    sMIM_INT -->|15%| TR1[Treasury]
+    
+    TF -->|ONLY IF REMAINING| SURPLUS[Surplus Fees]
+    
+    SURPLUS -->|85%| wTOKEN[wToken Holders]
+    SURPLUS -->|15%| TR2[Treasury]
+    
+    style sMIM_INT fill:#4CAF50
+    style SURPLUS fill:#2196F3
+```
+
+## 7-Day Average Utilization
+
+```mermaid
+graph LR
+    subgraph "Daily Snapshots (Circular Buffer)"
+        D1[Day 1: 45%]
+        D2[Day 2: 50%]
+        D3[Day 3: 55%]
+        D4[Day 4: 60%]
+        D5[Day 5: 52%]
+        D6[Day 6: 48%]
+        D7[Day 7: 54%]
     end
     
-    subgraph User Returns
-        LP --> wETH[wETH Holders]
-        LP --> wBTC[wBTC Holders]
-    end
+    D1 & D2 & D3 & D4 & D5 & D6 & D7 --> AVG[7-Day Avg: 52%]
+    AVG --> RATE[Borrow Rate: 16.2%]
 ```
 
 ## Security Model

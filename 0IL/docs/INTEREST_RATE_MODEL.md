@@ -4,6 +4,13 @@
 
 The 0IL Protocol uses a **kinked interest rate model** similar to Compound and Aave. This model incentivizes optimal capital utilization while ensuring sufficient liquidity for withdrawals.
 
+### Key Features
+
+1. **7-Day Average Utilization**: Rates are calculated based on a rolling 7-day average to prevent manipulation
+2. **Weekly Payment Cycle**: 0IL pools pay interest to sMIM every week
+3. **Priority Payment**: sMIM holders get paid FIRST, before any fees go to wToken holders
+4. **15% Protocol Fee**: Applied to both sMIM interest and 0IL vault profits
+
 ## Parameters
 
 | Parameter | Value | Description |
@@ -13,6 +20,8 @@ The 0IL Protocol uses a **kinked interest rate model** similar to Compound and A
 | Jump Multiplier | 100% | Rate increase per 100% utilization (after kink) |
 | Kink | 80% | Utilization point where rates accelerate |
 | Max Utilization | 90% | Hard cap on utilization |
+| **Protocol Fee** | **15%** | Performance fee on both sMIM and 0IL |
+| **Utilization Average** | **7 days** | Rolling average for rate calculation |
 
 ## Rate Calculation
 
@@ -180,14 +189,99 @@ Assuming 10% reserve factor:
 | 80% | 19.6% | 14.1% |
 | 90% | 29.6% | 24.0% |
 
+## 7-Day Average Utilization
+
+Unlike protocols that use instantaneous utilization, we use a **7-day rolling average**:
+
+```solidity
+// Daily utilization snapshots (circular buffer)
+uint256[7] public dailyUtilization;
+
+function averageUtilization() public view returns (uint256) {
+    uint256 sum = 0;
+    for (uint256 i = 0; i < 7; i++) {
+        sum += dailyUtilization[i];
+    }
+    return sum / 7;
+}
+```
+
+### Benefits:
+- **Manipulation Resistant**: Can't spike/dump utilization for rate arbitrage
+- **Stable Rates**: Prevents volatile rate swings
+- **Fair Pricing**: Reflects actual long-term usage
+
+## Weekly Payment Cycle
+
+Interest is paid on a **weekly cycle** rather than continuously accruing:
+
+```
+Week 1                              Week 2
+┌──────────────────────────────────┐┌──────────────────────────────────┐
+│                                  ││                                  │
+│  0IL pools accumulate fees       ││  New cycle starts                │
+│  Utilization snapshots taken     ││  Expected interest calculated    │
+│  At week end: pay sMIM           ││                                  │
+│                                  ││                                  │
+└──────────────────────────────────┘└──────────────────────────────────┘
+                                    │
+                                    └── payWeeklyInterest() called
+```
+
+### Weekly Settlement Process:
+
+1. **Collect Fees**: Gather all V3 trading fees
+2. **Calculate Expected Interest**: Based on 7-day avg utilization
+3. **Pay sMIM (Priority)**: sMIM gets paid FIRST
+4. **If Shortfall**: Pool pays ALL its fees to sMIM (even if insufficient)
+5. **Remainder to wToken**: Only AFTER sMIM is fully paid
+
+## Fee Waterfall (Priority Order)
+
+```
+0IL Pool Trading Fees (in MIM)
+        │
+        ▼
+┌───────────────────────────────────┐
+│  1. sMIM WEEKLY INTEREST          │  ◄── HIGHEST PRIORITY
+│     (Expected interest owed)      │
+└───────────────────────────────────┘
+        │
+        │ If fees remain after sMIM paid:
+        ▼
+┌───────────────────────────────────┐
+│  2. PROTOCOL FEE (15%)            │
+│     → Treasury                    │
+└───────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────┐
+│  3. wTOKEN HOLDERS (85%)          │
+│     → Increases wToken value      │
+└───────────────────────────────────┘
+```
+
+### What if 0IL Pool Can't Pay Full Interest?
+
+If accumulated fees < expected interest:
+
+```
+Pool pays: ALL accumulated fees (everything it has)
+Shortfall: Tracked but not penalized (this week)
+sMIM gets: Whatever pool could pay
+wToken holders get: NOTHING this week
+```
+
+This ensures **sMIM always has priority** on earnings.
+
 ## Protocol Fee Distribution
 
 ```
-Borrow Interest Paid
-        │
-        ├── 90% → sMIM Holders (Lenders)
-        │
-        └── 10% → Protocol Treasury
+sMIM Interest Received          0IL Trading Fees (after sMIM)
+        │                                    │
+        ├── 85% → sMIM Holders               ├── 85% → wToken Holders
+        │                                    │
+        └── 15% → Protocol Treasury          └── 15% → Protocol Treasury
 ```
 
 ## Interest Accrual

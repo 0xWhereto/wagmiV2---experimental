@@ -9,7 +9,12 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 /**
  * @title LeverageAMM
  * @notice Manages 2x leveraged LP positions for zero-IL exposure
- * @dev Borrows MIM to create leveraged positions, maintains 50% DTV
+ * @dev Features:
+ *   - Borrows MIM to create 2x leveraged positions
+ *   - Maintains 50% DTV (Debt-to-Value) ratio
+ *   - Weekly interest payment to sMIM (priority)
+ *   - 15% protocol performance fee on profits
+ *   - Fees distributed only AFTER weekly sMIM interest is paid
  */
 contract LeverageAMM is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -22,6 +27,8 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
     uint256 public constant MAX_DTV = 0.60e18;       // 60% - reduce leverage trigger
     uint256 public constant LIQUIDATION_DTV = 0.66e18; // 66% - emergency threshold
     uint256 public constant REBALANCE_REWARD = 0.001e18; // 0.1% reward for rebalancer
+    uint256 public constant PROTOCOL_FEE = 0.15e18;  // 15% performance fee
+    uint256 public constant SECONDS_PER_WEEK = 604_800;
     
     // ============ State Variables ============
     
@@ -55,6 +62,20 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
     /// @notice Minimum time between rebalances
     uint256 public rebalanceCooldown = 1 hours;
     
+    // ============ Fee & Weekly Payment State ============
+    
+    /// @notice Accumulated trading fees (in MIM)
+    uint256 public accumulatedFees;
+    
+    /// @notice Last week's interest payment timestamp
+    uint256 public lastWeeklyPayment;
+    
+    /// @notice Treasury address for protocol fees
+    address public treasury;
+    
+    /// @notice Pending fees for wToken holders (after sMIM payment)
+    uint256 public pendingWTokenFees;
+    
     // ============ Events ============
     
     event PositionOpened(uint256 underlyingAmount, uint256 borrowedAmount, uint256 lpValue);
@@ -62,6 +83,11 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
     event Rebalanced(bool isDeleverage, uint256 amountAdjusted, uint256 newDTV);
     event WTokenSet(address indexed wToken);
     event RebalanceCooldownSet(uint256 cooldown);
+    event FeesCollected(uint256 fee0, uint256 fee1, uint256 totalInMIM);
+    event WeeklyInterestPaid(uint256 requested, uint256 paid, uint256 shortfall);
+    event ProtocolFeePaid(uint256 amount);
+    event WTokenFeesDistributed(uint256 amount);
+    event TreasurySet(address indexed treasury);
     
     // ============ Errors ============
     
@@ -380,6 +406,113 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
         v3LPVault.addLiquidity(0, borrowAmount, 0, 0);
     }
     
+    // ============ Weekly Fee Payment System ============
+    
+    /**
+     * @notice Collect all trading fees from V3 positions
+     * @return totalFeesInMIM Total fees collected (converted to MIM)
+     */
+    function collectAllFees() public nonReentrant returns (uint256 totalFeesInMIM) {
+        // Collect fees from V3 vault
+        (uint256 fee0, uint256 fee1) = v3LPVault.collectFees();
+        
+        // Convert fee0 (underlying asset) to MIM value
+        uint256 price = oracle.getPrice();
+        uint256 fee0InMIM = (fee0 * price) / WAD;
+        
+        totalFeesInMIM = fee0InMIM + fee1;
+        accumulatedFees += totalFeesInMIM;
+        
+        emit FeesCollected(fee0, fee1, totalFeesInMIM);
+    }
+    
+    /**
+     * @notice Pay weekly interest to sMIM vault
+     * @dev Priority: sMIM gets paid first from ALL accumulated fees
+     *      Only after sMIM is paid do wToken holders get any fees
+     */
+    function payWeeklyInterest() external nonReentrant {
+        require(block.timestamp >= lastWeeklyPayment + SECONDS_PER_WEEK, "Week not complete");
+        
+        // Collect any pending fees first
+        collectAllFees();
+        
+        // Get expected interest from staking vault
+        uint256 expectedInterest = stakingVault.getPoolWeeklyInterest(address(this));
+        
+        // Determine what we can actually pay
+        uint256 availableToPay = accumulatedFees;
+        uint256 actualPayment = expectedInterest > availableToPay ? availableToPay : expectedInterest;
+        uint256 shortfall = expectedInterest > actualPayment ? expectedInterest - actualPayment : 0;
+        
+        // Pay sMIM vault (they get PRIORITY)
+        if (actualPayment > 0) {
+            mim.approve(address(stakingVault), actualPayment);
+            stakingVault.payWeeklyInterest(actualPayment);
+            accumulatedFees -= actualPayment;
+        }
+        
+        emit WeeklyInterestPaid(expectedInterest, actualPayment, shortfall);
+        
+        // Only AFTER sMIM is paid, remaining fees go to:
+        // 1. 15% protocol fee to treasury
+        // 2. 85% to wToken holders
+        if (accumulatedFees > 0) {
+            uint256 protocolFee = (accumulatedFees * PROTOCOL_FEE) / WAD;
+            uint256 toWTokenHolders = accumulatedFees - protocolFee;
+            
+            // Pay protocol fee
+            if (protocolFee > 0 && treasury != address(0)) {
+                mim.safeTransfer(treasury, protocolFee);
+                emit ProtocolFeePaid(protocolFee);
+            }
+            
+            // Remaining goes to wToken holders (distributed on next action)
+            pendingWTokenFees += toWTokenHolders;
+            emit WTokenFeesDistributed(toWTokenHolders);
+            
+            accumulatedFees = 0;
+        }
+        
+        lastWeeklyPayment = block.timestamp;
+    }
+    
+    /**
+     * @notice Check if weekly payment is due
+     */
+    function isWeeklyPaymentDue() external view returns (bool) {
+        return block.timestamp >= lastWeeklyPayment + SECONDS_PER_WEEK;
+    }
+    
+    /**
+     * @notice Get expected weekly interest this pool owes to sMIM
+     */
+    function getExpectedWeeklyInterest() external view returns (uint256) {
+        return stakingVault.getPoolWeeklyInterest(address(this));
+    }
+    
+    /**
+     * @notice Check if pool can fully pay its weekly interest
+     */
+    function canPayFullInterest() external view returns (bool, uint256 shortfall) {
+        uint256 expected = stakingVault.getPoolWeeklyInterest(address(this));
+        uint256 available = accumulatedFees + mim.balanceOf(address(this));
+        
+        if (available >= expected) {
+            return (true, 0);
+        }
+        return (false, expected - available);
+    }
+    
+    /**
+     * @notice Set treasury address for protocol fees
+     */
+    function setTreasury(address _treasury) external onlyOwner {
+        require(_treasury != address(0), "Zero address");
+        treasury = _treasury;
+        emit TreasurySet(_treasury);
+    }
+    
     // ============ Emergency Functions ============
     
     /**
@@ -401,6 +534,14 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
         // Store remaining assets
         // Users can withdraw what's left
     }
+}
+
+// Extended interface for staking vault
+interface IMIMStakingVault {
+    function borrow(uint256 amount) external;
+    function repay(uint256 amount) external;
+    function payWeeklyInterest(uint256 amount) external returns (uint256 paid, uint256 shortfall);
+    function getPoolWeeklyInterest(address pool) external view returns (uint256);
 }
 
 // ============ Interfaces ============

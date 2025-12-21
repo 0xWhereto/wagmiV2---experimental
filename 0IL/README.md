@@ -166,13 +166,19 @@ npx ts-node test/backtesting/historical-simulation.ts
 
 ## 📈 Interest Rate Model
 
-The protocol uses a **kinked interest rate model** to incentivize optimal utilization:
+The protocol uses a **kinked interest rate model** with **7-day average utilization**:
 
 | Utilization | Base Rate | Rate Calculation |
 |-------------|-----------|------------------|
 | 0-80%       | 10%       | 10% + (util × 12%) |
 | 80-90%      | 19.6%     | 19.6% + ((util-80%) × 100%) |
 | >90%        | N/A       | Capped - no new borrows |
+
+### Key Features
+
+- **7-Day Rolling Average**: Utilization calculated on 7-day average (manipulation resistant)
+- **Weekly Payment Cycle**: 0IL pools pay interest to sMIM every week
+- **15% Protocol Fee**: Applied to both sMIM and 0IL earnings
 
 ### Rate Curve
 
@@ -193,17 +199,47 @@ APR %
     0    20   40   60   80   90  100
 ```
 
+### Fee Waterfall (Priority Order)
+
+```
+0IL Pool Fees
+      │
+      ▼
+┌─────────────────┐
+│ 1. sMIM Interest│ ◄── HIGHEST PRIORITY
+│    (Weekly)     │
+└─────────────────┘
+      │
+      ▼
+┌─────────────────┐
+│ 2. Protocol Fee │ (15%)
+│    → Treasury   │
+└─────────────────┘
+      │
+      ▼
+┌─────────────────┐
+│ 3. wToken Fees  │ (85%)
+│    → Holders    │
+└─────────────────┘
+```
+
 ## 💰 Revenue Streams
 
+### For sMIM Holders (Priority)
+- **Weekly interest payments** from 0IL pools
+- **PRIORITY access** to all 0IL pool fees
+- Dynamic APR based on 7-day average utilization
+- **85% of interest** (15% protocol fee)
+
 ### For wToken Holders (wETH, wBTC)
-- Trading fees from V3 positions
+- Trading fees from V3 positions (AFTER sMIM is paid)
 - Linear price exposure (no IL)
+- **85% of remaining fees** (15% protocol fee)
 - Compound returns from rebalancing
 
-### For sMIM Holders
-- Borrow interest from wToken positions
-- Dynamic APR based on utilization
-- Compounding rewards
+### For Protocol Treasury
+- **15% performance fee** on sMIM interest
+- **15% performance fee** on 0IL vault profits
 
 ## 🔒 Security Features
 
