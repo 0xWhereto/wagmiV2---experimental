@@ -12,19 +12,34 @@ MIM (Magic Internet Money) is the protocol's native stablecoin, maintaining a 1:
 
 **Key Features:**
 - ERC20 compliant with permit functionality
-- Mint/burn controlled by authorized minters
+- **USDC deposits go to MIM/USDC V3 pool** at 0.995-1.005 range
+- 0.05% fee tier for stablecoin pair
+- Creates deep peg liquidity and earns trading fees
 - Used as quote currency for all trading pairs
 
-**State Variables:**
-```solidity
-mapping(address => bool) public isMinter;      // Authorized minters
-mapping(address => uint256) public minterAllowance;  // Mint limits
+**Mint Flow:**
+```
+User deposits 1000 USDC
+        │
+        ▼
+┌─────────────────────────────────────┐
+│  MIM Contract:                      │
+│  1. Mint 1000 MIM (to contract)     │
+│  2. Add 1000 USDC + 1000 MIM to     │
+│     V3 pool at 0.995-1.005 range    │
+│  3. Mint 1000 MIM to user           │
+└─────────────────────────────────────┘
+        │
+        ▼
+  User receives 1000 MIM
+  Pool has deep peg liquidity
 ```
 
 **Core Functions:**
+- `mintWithUSDC(uint256 amount)`: Deposit USDC, get MIM, USDC goes to V3 pool
+- `redeemForUSDC(uint256 amount)`: Burn MIM, get USDC from V3 pool
+- `collectFees()`: Collect trading fees from V3 position
 - `mint(address to, uint256 amount)`: Mint MIM (minter only)
-- `burn(uint256 amount)`: Burn MIM from sender
-- `setMinter(address minter, uint256 allowance)`: Configure minter (owner only)
 
 ### 2. MIM Staking Vault (`MIMStakingVault.sol`)
 
