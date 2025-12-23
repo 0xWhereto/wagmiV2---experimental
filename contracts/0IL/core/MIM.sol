@@ -337,6 +337,19 @@ contract MIM is ERC20, ERC20Permit, Ownable, ReentrancyGuard {
             mimInPool = balanceOf(mimUsdcPool);
         }
     }
+    
+    /**
+     * @notice Rescue any stuck tokens from the contract
+     * @param token The token to rescue
+     * @param to Recipient address
+     * @param amount Amount to rescue (0 for all)
+     */
+    function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 toTransfer = amount == 0 ? balance : (amount > balance ? balance : amount);
+        IERC20(token).safeTransfer(to, toTransfer);
+    }
 }
 
 // ============ Interfaces ============

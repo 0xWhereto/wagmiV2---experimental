@@ -486,5 +486,18 @@ contract MIMStakingVaultV2 is ERC20, Ownable, ReentrancyGuard {
         
         emit InterestAccrued(interestAccumulated, borrowIndex);
     }
+    
+    /**
+     * @notice Rescue any stuck tokens from the contract
+     * @param token The token to rescue
+     * @param to Recipient address
+     * @param amount Amount to rescue (0 for all)
+     */
+    function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
+        require(to != address(0), "Invalid recipient");
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 toTransfer = amount == 0 ? balance : (amount > balance ? balance : amount);
+        IERC20(token).safeTransfer(to, toTransfer);
+    }
 }
 

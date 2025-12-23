@@ -348,6 +348,31 @@ contract WToken is ERC20, Ownable, ReentrancyGuard {
     // ============ Receive ETH ============
     
     receive() external payable {}
+    
+    /**
+     * @notice Rescue any stuck tokens from the contract
+     * @param token The token to rescue
+     * @param to Recipient address
+     * @param amount Amount to rescue (0 for all)
+     */
+    function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
+        require(to != address(0), "Invalid recipient");
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 toTransfer = amount == 0 ? balance : (amount > balance ? balance : amount);
+        IERC20(token).safeTransfer(to, toTransfer);
+    }
+    
+    /**
+     * @notice Rescue stuck ETH from the contract
+     * @param to Recipient address
+     * @param amount Amount to rescue (0 for all)
+     */
+    function rescueETH(address payable to, uint256 amount) external onlyOwner {
+        require(to != address(0), "Invalid recipient");
+        uint256 balance = address(this).balance;
+        uint256 toTransfer = amount == 0 ? balance : (amount > balance ? balance : amount);
+        to.transfer(toTransfer);
+    }
 }
 
 // ============ Interfaces ============
