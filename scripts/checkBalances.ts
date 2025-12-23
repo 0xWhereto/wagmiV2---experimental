@@ -1,21 +1,17 @@
 import { ethers } from "hardhat";
 
-const DEPLOYER = "0x4151E05ABe56192e2A6775612C2020509Fd50637";
-
 async function main() {
-  console.log("=== Deployer Balances ===\n");
-  
-  const chains = [
-    { name: "Arbitrum", rpc: "https://arb1.arbitrum.io/rpc" },
-    { name: "Ethereum", rpc: "https://ethereum-rpc.publicnode.com" },
-    { name: "Sonic", rpc: "https://rpc.soniclabs.com" },
-  ];
+  const [deployer] = await ethers.getSigners();
+  console.log(`Wallet: ${deployer.address}\n`);
 
-  for (const chain of chains) {
-    const provider = new ethers.providers.JsonRpcProvider(chain.rpc);
-    const balance = await provider.getBalance(DEPLOYER);
-    console.log(`${chain.name}: ${ethers.utils.formatEther(balance)} ETH`);
-  }
+  const sUSDC = await ethers.getContractAt("IERC20", "0xa56a2C5678f8e10F61c6fBafCB0887571B9B432B");
+  const mim = await ethers.getContractAt("MIM", "0xBeE5b0106d4DFc1AFcc9d105bd8dbeE3c4E53FA9");
+
+  console.log("Your sUSDC balance:", ethers.utils.formatUnits(await sUSDC.balanceOf(deployer.address), 6));
+  console.log("Your MIM balance:", ethers.utils.formatUnits(await mim.balanceOf(deployer.address), 6));
+  console.log("sUSDC in MIM contract:", ethers.utils.formatUnits(await sUSDC.balanceOf(mim.address), 6));
+  console.log("MIM total supply:", ethers.utils.formatUnits(await mim.totalSupply(), 6));
+  console.log("MIM totalBacking:", ethers.utils.formatUnits(await mim.totalBacking(), 6));
 }
 
 main().catch(console.error);
