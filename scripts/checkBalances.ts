@@ -1,17 +1,22 @@
 import { ethers } from "hardhat";
 
+const SWETH = "0x5E501C482952c1F2D58a4294F9A97759968c5125";
+const MIM = "0x84dC0B4EA2f302CCbDe37cFC6a4C434e0Fd08708";
+
 async function main() {
-  const [deployer] = await ethers.getSigners();
-  console.log(`Wallet: ${deployer.address}\n`);
-
-  const sUSDC = await ethers.getContractAt("IERC20", "0xa56a2C5678f8e10F61c6fBafCB0887571B9B432B");
-  const mim = await ethers.getContractAt("MIM", "0xBeE5b0106d4DFc1AFcc9d105bd8dbeE3c4E53FA9");
-
-  console.log("Your sUSDC balance:", ethers.utils.formatUnits(await sUSDC.balanceOf(deployer.address), 6));
-  console.log("Your MIM balance:", ethers.utils.formatUnits(await mim.balanceOf(deployer.address), 6));
-  console.log("sUSDC in MIM contract:", ethers.utils.formatUnits(await sUSDC.balanceOf(mim.address), 6));
-  console.log("MIM total supply:", ethers.utils.formatUnits(await mim.totalSupply(), 6));
-  console.log("MIM totalBacking:", ethers.utils.formatUnits(await mim.totalBacking(), 6));
+  const [signer] = await ethers.getSigners();
+  console.log("=== Check User Balances ===\n");
+  console.log("User:", signer.address);
+  
+  const sweth = new ethers.Contract(SWETH, [
+    "function balanceOf(address) view returns (uint256)"
+  ], signer);
+  const mim = new ethers.Contract(MIM, [
+    "function balanceOf(address) view returns (uint256)"
+  ], signer);
+  
+  console.log("sWETH:", ethers.utils.formatEther(await sweth.balanceOf(signer.address)));
+  console.log("MIM:", ethers.utils.formatEther(await mim.balanceOf(signer.address)));
+  console.log("\nNeed 0.0005 sWETH for deposit");
 }
-
 main().catch(console.error);

@@ -335,32 +335,87 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
         // Repay proportional debt
         uint256 debtToRepay = (totalDebt * withdrawPercent) / WAD;
         
+        // After removeLiquidity(), all MIM is now in this contract
+        // mim.balanceOf(address(this)) already includes mimAmount from the LP
+        uint256 totalMIMAvailable = mim.balanceOf(address(this));
+        
+        // Handle dust amounts (rounding errors) - if shortfall is < 0.0001 MIM, just use what we have
+        uint256 DUST_THRESHOLD = 1e14; // 0.0001 MIM
+        if (totalMIMAvailable < debtToRepay && debtToRepay - totalMIMAvailable < DUST_THRESHOLD) {
+            // Tiny shortfall due to rounding - repay what we have
+            debtToRepay = totalMIMAvailable;
+        }
+        
         // Use MIM to repay debt first
-        if (mimAmount >= debtToRepay) {
+        if (totalMIMAvailable >= debtToRepay) {
+            // We have enough MIM to repay debt
             mim.safeTransfer(address(stakingVault), debtToRepay);
             stakingVault.repay(debtToRepay);
             
-            // Convert remaining MIM to underlying if any
-            uint256 remainingMIM = mimAmount - debtToRepay;
+            // Calculate remaining MIM after repayment
+            uint256 remainingMIM = totalMIMAvailable - debtToRepay;
             if (remainingMIM > 0) {
-                // Swap MIM for underlying (simplified - would use actual swap)
-                uint256 price = oracle.getPrice();
-                underlyingReturned = underlyingAmount + (remainingMIM * WAD / price);
+                // Swap remaining MIM for underlying
+                uint256 extraUnderlying = _swapMIMForUnderlying(remainingMIM);
+                underlyingReturned = underlyingAmount + extraUnderlying;
             } else {
                 underlyingReturned = underlyingAmount;
             }
         } else {
-            // Need to swap some underlying to cover debt
-            uint256 mimShortfall = debtToRepay - mimAmount;
+            // Not enough MIM - need to swap some underlying for MIM to cover shortfall
+            uint256 mimShortfall = debtToRepay - totalMIMAvailable;
             uint256 price = oracle.getPrice();
             uint256 underlyingNeeded = (mimShortfall * WAD / price);
             
-            // Swap underlying for MIM (simplified)
-            underlyingReturned = underlyingAmount - underlyingNeeded;
+            // Add 1% buffer for swap slippage
+            underlyingNeeded = (underlyingNeeded * 101) / 100;
             
-            // Repay full debt
-            mim.safeTransfer(address(stakingVault), debtToRepay);
-            stakingVault.repay(debtToRepay);
+            // Ensure we don't try to sell more underlying than we have
+            if (underlyingNeeded > underlyingAmount) {
+                // Vault is underwater - repay what we can with all available assets
+                
+                // Swap ALL underlying for MIM via the pool
+                uint256 mimFromSwap = _swapUnderlyingForMIM(underlyingAmount);
+                uint256 totalMIMToRepay = totalMIMAvailable + mimFromSwap;
+                
+                // Repay as much as possible
+                if (totalMIMToRepay > 0) {
+                    mim.safeTransfer(address(stakingVault), totalMIMToRepay);
+                    stakingVault.repay(totalMIMToRepay);
+                }
+                
+                // User gets nothing - all value went to debt repayment
+                underlyingReturned = 0;
+                
+                // Update state
+                totalDebt = totalDebt > totalMIMToRepay ? totalDebt - totalMIMToRepay : 0;
+                totalUnderlying -= (totalUnderlying * withdrawPercent) / WAD;
+                
+                emit PositionClosed(withdrawPercent, underlyingReturned);
+                return underlyingReturned;
+            }
+            
+            // Swap the needed underlying for MIM
+            uint256 mimFromSwap = _swapUnderlyingForMIM(underlyingNeeded);
+            totalMIMAvailable += mimFromSwap;
+            
+            // Now we should have enough MIM to repay
+            if (totalMIMAvailable >= debtToRepay) {
+                mim.safeTransfer(address(stakingVault), debtToRepay);
+                stakingVault.repay(debtToRepay);
+            } else {
+                // Still not enough after swap (slippage) - repay what we have
+                mim.safeTransfer(address(stakingVault), totalMIMAvailable);
+                stakingVault.repay(totalMIMAvailable);
+                // Adjust debt accordingly
+                totalDebt = totalDebt > totalMIMAvailable ? totalDebt - totalMIMAvailable : 0;
+                totalUnderlying -= (totalUnderlying * withdrawPercent) / WAD;
+                underlyingReturned = underlyingAmount - underlyingNeeded;
+                emit PositionClosed(withdrawPercent, underlyingReturned);
+                return underlyingReturned;
+            }
+            
+            underlyingReturned = underlyingAmount - underlyingNeeded;
         }
         
         totalDebt -= debtToRepay;
@@ -402,6 +457,133 @@ contract LeverageAMM is Ownable, ReentrancyGuard {
     }
     
     // ============ Internal Functions ============
+    
+    // Swap state for callback
+    bool private _isSwapping;
+    uint256 private _swapAmount;
+    bool private _swappingMIM; // True when swapping MIM->underlying, false when swapping underlying->MIM
+    
+    /**
+     * @notice Swap underlying asset for MIM via the V3 pool
+     * @param underlyingAmount Amount of underlying to swap
+     * @return mimReceived Amount of MIM received
+     */
+    function _swapUnderlyingForMIM(uint256 underlyingAmount) internal returns (uint256 mimReceived) {
+        if (underlyingAmount == 0) return 0;
+        
+        // Get the pool address from v3LPVault
+        address poolAddr = address(v3LPVault.pool());
+        IUniswapV3Pool pool = IUniswapV3Pool(poolAddr);
+        
+        // Determine swap direction based on token ordering
+        bool zeroForOne = underlyingIsToken0; // If underlying is token0, swap 0->1 to get MIM
+        
+        // Get MIM balance before swap
+        uint256 mimBefore = mim.balanceOf(address(this));
+        
+        // Set swap state for callback
+        _isSwapping = true;
+        _swapAmount = underlyingAmount;
+        
+        // Calculate sqrtPriceLimitX96 (use min/max to allow any price)
+        uint160 sqrtPriceLimitX96 = zeroForOne 
+            ? 4295128740 // Minimum sqrt price (near 0)
+            : 1461446703485210103287273052203988822378723970341; // Maximum sqrt price
+        
+        // Call swap - callback will provide tokens
+        pool.swap(
+            address(this),  // recipient
+            zeroForOne,     // direction
+            int256(underlyingAmount), // amountSpecified (positive = exactInput)
+            sqrtPriceLimitX96,
+            bytes("")       // no callback data
+        );
+        
+        // Clear swap state
+        _isSwapping = false;
+        _swapAmount = 0;
+        
+        // Calculate MIM received
+        mimReceived = mim.balanceOf(address(this)) - mimBefore;
+    }
+    
+    /**
+     * @notice Swap MIM for underlying asset via the V3 pool
+     * @param mimAmount Amount of MIM to swap
+     * @return underlyingReceived Amount of underlying received
+     */
+    function _swapMIMForUnderlying(uint256 mimAmount) internal returns (uint256 underlyingReceived) {
+        if (mimAmount == 0) return 0;
+        
+        // Get the pool address from v3LPVault
+        address poolAddr = address(v3LPVault.pool());
+        IUniswapV3Pool pool = IUniswapV3Pool(poolAddr);
+        
+        // Determine swap direction based on token ordering
+        // If underlying is token0, MIM is token1, so we swap 1->0 to get underlying
+        bool zeroForOne = !underlyingIsToken0;
+        
+        // Get underlying balance before swap
+        uint256 underlyingBefore = underlyingAsset.balanceOf(address(this));
+        
+        // Set swap state for callback
+        _isSwapping = true;
+        _swapAmount = mimAmount;
+        _swappingMIM = true; // Flag to indicate we're swapping MIM, not underlying
+        
+        // Calculate sqrtPriceLimitX96 (use min/max to allow any price)
+        uint160 sqrtPriceLimitX96 = zeroForOne 
+            ? 4295128740 // Minimum sqrt price (near 0)
+            : 1461446703485210103287273052203988822378723970341; // Maximum sqrt price
+        
+        // Call swap - callback will provide tokens
+        pool.swap(
+            address(this),  // recipient
+            zeroForOne,     // direction
+            int256(mimAmount), // amountSpecified (positive = exactInput)
+            sqrtPriceLimitX96,
+            bytes("")       // no callback data
+        );
+        
+        // Clear swap state
+        _isSwapping = false;
+        _swapAmount = 0;
+        _swappingMIM = false;
+        
+        // Calculate underlying received
+        underlyingReceived = underlyingAsset.balanceOf(address(this)) - underlyingBefore;
+    }
+    
+    /**
+     * @notice Uniswap V3 swap callback
+     * @dev Called by the pool during swap to collect tokens
+     */
+    function uniswapV3SwapCallback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata /*data*/
+    ) external {
+        require(_isSwapping, "Not swapping");
+        require(msg.sender == address(v3LPVault.pool()), "Not pool");
+        
+        // Determine which token to pay
+        if (amount0Delta > 0) {
+            // Need to pay token0
+            if (underlyingIsToken0) {
+                underlyingAsset.safeTransfer(msg.sender, uint256(amount0Delta));
+            } else {
+                mim.safeTransfer(msg.sender, uint256(amount0Delta));
+            }
+        }
+        if (amount1Delta > 0) {
+            // Need to pay token1
+            if (underlyingIsToken0) {
+                mim.safeTransfer(msg.sender, uint256(amount1Delta));
+            } else {
+                underlyingAsset.safeTransfer(msg.sender, uint256(amount1Delta));
+            }
+        }
+    }
     
     /**
      * @notice Remove leverage by repaying debt
@@ -629,9 +811,31 @@ interface IV3LPVault {
     function getTotalAssets() external view returns (uint256 amount0, uint256 amount1);
     
     function collectFees() external returns (uint256 fee0, uint256 fee1);
+    
+    function pool() external view returns (address);
 }
 
 interface IOracleAdapter {
     function getPrice() external view returns (uint256);
+}
+
+interface IUniswapV3Pool {
+    function swap(
+        address recipient,
+        bool zeroForOne,
+        int256 amountSpecified,
+        uint160 sqrtPriceLimitX96,
+        bytes calldata data
+    ) external returns (int256 amount0, int256 amount1);
+    
+    function slot0() external view returns (
+        uint160 sqrtPriceX96,
+        int24 tick,
+        uint16 observationIndex,
+        uint16 observationCardinality,
+        uint16 observationCardinalityNext,
+        uint8 feeProtocol,
+        bool unlocked
+    );
 }
 

@@ -167,6 +167,33 @@ contract V3LPVault is Ownable, ReentrancyGuard {
         }
     }
     
+    /**
+     * @notice Fix a layer's tokenId (emergency use only)
+     * @param layerIndex Index of the layer to fix
+     * @param newTokenId The correct NFT tokenId  
+     */
+    function fixLayerTokenId(uint256 layerIndex, uint256 newTokenId) external onlyOwner {
+        require(layerIndex < layers.length, "Invalid layer index");
+        // Verify we own this NFT
+        require(positionManager.ownerOf(newTokenId) == address(this), "Not NFT owner");
+        
+        // Get position data to update liquidity
+        (,,,,,int24 tickLower, int24 tickUpper, uint128 liquidity,,,,) = positionManager.positions(newTokenId);
+        
+        layers[layerIndex].tokenId = newTokenId;
+        layers[layerIndex].liquidity = liquidity;
+        layers[layerIndex].tickLower = tickLower;
+        layers[layerIndex].tickUpper = tickUpper;
+    }
+    
+    /**
+     * @notice Rescue an NFT from the vault (emergency use only)
+     * @param tokenId NFT tokenId to rescue
+     */
+    function rescueNFT(uint256 tokenId) external onlyOwner {
+        positionManager.safeTransferFrom(address(this), owner(), tokenId);
+    }
+    
     function setDefaultLayers() external onlyOwner {
         delete layers;
         
@@ -694,6 +721,8 @@ interface INonfungiblePositionManager {
     function decreaseLiquidity(DecreaseLiquidityParams calldata params) external returns (uint256 amount0, uint256 amount1);
     function collect(CollectParams calldata params) external returns (uint256 amount0, uint256 amount1);
     function burn(uint256 tokenId) external;
+    function ownerOf(uint256 tokenId) external view returns (address);
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
     function positions(uint256 tokenId) external view returns (
         uint96 nonce,
         address operator,

@@ -1,101 +1,122 @@
 import { ethers } from "hardhat";
 
-const TX_HASH = "0x60fd06596278c2939375b373bed1f8b1f674a62226254bd8ae231932b76cc991";
+const TX_HASH = "0xc4d12a05e6524979784eb5cbca1f905ae4263366343e6f11285c9fe8994016da";
+
+const ADDRESSES = {
+  MIM: "0x84dC0B4EA2f302CCbDe37cFC6a4C434e0Fd08708",
+  SMIM: "0x4671B3F169Daee1eC027d60B484ce4fb98cF7db7",
+  WETH: "0xEA7681f28c62AbF83DeD17eEd88D48b3BD813Af7"
+};
 
 async function main() {
-  console.log("Debugging failed withdrawal transaction...\n");
-
-  const provider = new ethers.providers.JsonRpcProvider("https://rpc.soniclabs.com");
+  const [signer] = await ethers.getSigners();
+  const provider = ethers.provider;
   
-  // Get transaction
+  console.log("=== Debugging Failed Withdrawal TX ===\n");
+  console.log("TX Hash:", TX_HASH);
+
+  // Get transaction details
   const tx = await provider.getTransaction(TX_HASH);
-  console.log("Transaction:");
-  console.log(`  From: ${tx?.from}`);
-  console.log(`  To: ${tx?.to}`);
-  console.log(`  Value: ${tx?.value ? ethers.utils.formatEther(tx.value) : 0} S`);
-  console.log(`  Data length: ${tx?.data?.length}`);
-  
-  // Get receipt
-  const receipt = await provider.getTransactionReceipt(TX_HASH);
-  console.log(`\nReceipt:`);
-  console.log(`  Status: ${receipt?.status === 1 ? "SUCCESS" : "FAILED"}`);
-  console.log(`  Gas Used: ${receipt?.gasUsed?.toString()}`);
-  console.log(`  Logs: ${receipt?.logs?.length || 0}`);
+  if (!tx) {
+    console.log("Transaction not found");
+    return;
+  }
 
-  if (receipt?.status === 0) {
-    console.log("\n❌ Transaction REVERTED");
+  console.log("\n--- Transaction Details ---");
+  console.log("From:", tx.from);
+  console.log("To:", tx.to);
+  console.log("Value:", ethers.utils.formatEther(tx.value || 0), "ETH");
+  
+  // Decode input data
+  const iface = new ethers.utils.Interface([
+    "function withdraw(uint256 shares) returns (uint256)",
+    "function withdraw(uint256 shares, uint256 minAssets) returns (uint256)",
+    "function withdraw(uint256 assets, address receiver, address owner) returns (uint256)"
+  ]);
+
+  try {
+    const decoded = iface.parseTransaction({ data: tx.data });
+    console.log("\n--- Decoded Input ---");
+    console.log("Function:", decoded.name);
+    console.log("Args:", decoded.args.map((a: any) => a.toString()));
     
-    // Try to get revert reason
+    if (decoded.args[0]) {
+      const amount = decoded.args[0];
+      console.log("Amount (formatted 18 dec):", ethers.utils.formatUnits(amount, 18));
+    }
+  } catch (e) {
+    console.log("Could not decode with known ABIs");
+    console.log("Raw data:", tx.data);
+  }
+
+  // Check which contract was called
+  console.log("\n--- Contract Identification ---");
+  if (tx.to?.toLowerCase() === ADDRESSES.SMIM.toLowerCase()) {
+    console.log("Target: sMIM (StakingVault)");
+    
+    // Check current state
+    const vault = new ethers.Contract(ADDRESSES.SMIM, [
+      "function balanceOf(address) view returns (uint256)",
+      "function getCash() view returns (uint256)",
+      "function totalAssets() view returns (uint256)",
+      "function convertToAssets(uint256) view returns (uint256)"
+    ], signer);
+
+    const userBalance = await vault.balanceOf(tx.from);
+    const cash = await vault.getCash();
+    
+    console.log("User sMIM balance:", ethers.utils.formatUnits(userBalance, 18));
+    console.log("Vault cash:", ethers.utils.formatUnits(cash, 18), "MIM");
+    
+    // Try to decode the amount being withdrawn
     try {
-      const code = await provider.call({
-        to: tx?.to,
-        from: tx?.from,
-        data: tx?.data,
-        value: tx?.value,
-      }, tx?.blockNumber);
-      console.log("Call result:", code);
-    } catch (e: any) {
-      console.log("\nRevert reason:", e.reason || e.message);
+      const decoded = iface.parseTransaction({ data: tx.data });
+      const shares = decoded.args[0];
+      const assetsNeeded = await vault.convertToAssets(shares);
+      console.log("\nWithdraw requested:", ethers.utils.formatUnits(shares, 18), "shares");
+      console.log("Assets needed:", ethers.utils.formatUnits(assetsNeeded, 18), "MIM");
+      console.log("Cash available:", ethers.utils.formatUnits(cash, 18), "MIM");
       
-      // Try to decode error
-      if (e.data) {
-        console.log("Error data:", e.data);
+      if (assetsNeeded.gt(cash)) {
+        console.log("\n❌ INSUFFICIENT LIQUIDITY");
+        console.log("Shortfall:", ethers.utils.formatUnits(assetsNeeded.sub(cash), 18), "MIM");
+      } else {
+        console.log("\n✅ Sufficient liquidity available");
       }
-    }
-  }
-
-  // Decode the transaction data
-  if (tx?.data) {
-    console.log("\n--- Decoding Transaction Data ---");
-    
-    // Check function selector
-    const selector = tx.data.slice(0, 10);
-    console.log(`Function selector: ${selector}`);
-    
-    // Common Hub function selectors
-    const selectors: Record<string, string> = {
-      "0x7b0a47ee": "withdrawTo",
-      "0x4d66a6c6": "swap",
-      "0x095ea7b3": "approve",
-    };
-    
-    console.log(`Function: ${selectors[selector] || "Unknown"}`);
-  }
-
-  // Check Hub configuration
-  console.log("\n--- Hub Configuration Check ---");
-  const HUB_ADDRESS = tx?.to;
-  
-  const hubAbi = [
-    "function owner() view returns (address)",
-    "function peers(uint32) view returns (bytes32)",
-  ];
-  
-  if (HUB_ADDRESS) {
-    const hub = new ethers.Contract(HUB_ADDRESS, hubAbi, provider);
-    
-    try {
-      const owner = await hub.owner();
-      console.log(`Hub owner: ${owner}`);
     } catch (e) {
-      console.log("Could not read Hub owner");
+      console.log("Could not analyze amount");
     }
-
-    // Check peers for common gateway chains
-    const chainEids = [30110, 30101, 30184]; // Arbitrum, Ethereum, Base
-    const chainNames = ["Arbitrum", "Ethereum", "Base"];
     
-    for (let i = 0; i < chainEids.length; i++) {
+  } else if (tx.to?.toLowerCase() === ADDRESSES.WETH.toLowerCase()) {
+    console.log("Target: wETH (Zero-IL Vault)");
+  } else {
+    console.log("Target: Unknown contract -", tx.to);
+  }
+
+  // Get receipt to check revert reason
+  console.log("\n--- Transaction Receipt ---");
+  try {
+    const receipt = await provider.getTransactionReceipt(TX_HASH);
+    console.log("Status:", receipt.status === 1 ? "Success" : "Failed");
+    console.log("Gas Used:", receipt.gasUsed.toString());
+    
+    if (receipt.status === 0) {
+      // Try to get revert reason
       try {
-        const peer = await hub.peers(chainEids[i]);
-        const peerAddress = "0x" + peer.slice(-40);
-        console.log(`Peer for ${chainNames[i]} (${chainEids[i]}): ${peerAddress}`);
-      } catch (e) {
-        console.log(`Could not read peer for ${chainNames[i]}`);
+        await provider.call({
+          to: tx.to,
+          data: tx.data,
+          from: tx.from,
+          value: tx.value,
+          gasLimit: tx.gasLimit
+        }, tx.blockNumber! - 1);
+      } catch (e: any) {
+        console.log("Revert reason:", e.reason || e.message?.slice(0, 200));
       }
     }
+  } catch (e: any) {
+    console.log("Could not get receipt:", e.message?.slice(0, 100));
   }
 }
 
 main().catch(console.error);
-
