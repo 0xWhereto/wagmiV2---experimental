@@ -1,66 +1,60 @@
 import { ethers } from "hardhat";
 
-const HUB = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
-const LZ_ENDPOINT_SONIC = "0x6F475642a6e85809B1c36Fa62763669b1b48DD5B";
+const HUB_ADDRESS = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
 const ARB_EID = 30110;
+const SONIC_LZ_ENDPOINT = "0x6F475642a6e85809B1c36Fa62763669b1b48DD5B";
+const SONIC_RECEIVE_LIB = "0xe1844c5D63a9543023008D332Bd3d2e6f1FE1043";
 
-// DVN on Sonic that corresponds to the Arbitrum DVN
-// We need to match what the OLD gateway used successfully
-const SONIC_DVN_FOR_ARB = "0x282b3386571f7f794450d5789911a9804FA346b4";
+// The ARBITRUM DVN - this is what the Hub should expect for messages FROM Arbitrum
+const ARB_LZ_DVN = ethers.utils.getAddress("0x2f55c492897526677c5b68fb199ea31e2c126416");
 
 async function main() {
   const [deployer] = await ethers.getSigners();
+  console.log("=== Fix Hub Receive DVN ===");
+  console.log("Setting Hub to expect Arbitrum DVN:", ARB_LZ_DVN);
   
-  console.log("=== Fixing Hub Receive DVN for Arbitrum ===\n");
-  
-  const endpointAbi = [
-    "function getReceiveLibrary(address, uint32) view returns (address, bool)",
-    "function setConfig(address, address, tuple(uint32, uint32, bytes)[]) external",
-    "function getConfig(address, address, uint32, uint32) view returns (bytes)",
-  ];
-  
-  const endpoint = new ethers.Contract(LZ_ENDPOINT_SONIC, endpointAbi, deployer);
-  
-  const [receiveLib] = await endpoint.getReceiveLibrary(HUB, ARB_EID);
-  console.log(`Receive library: ${receiveLib}`);
-  
-  // Check current config
-  const currentConfig = await endpoint.getConfig(HUB, receiveLib, ARB_EID, 2);
-  const currentDecoded = ethers.utils.defaultAbiCoder.decode(
-    ["tuple(uint64, uint8, uint8, uint8, address[], address[])"],
-    currentConfig
+  const endpoint = await ethers.getContractAt(
+    ["function setConfig(address oapp, address lib, tuple(uint32 eid, uint32 configType, bytes config)[] configs) external"],
+    SONIC_LZ_ENDPOINT
   );
-  console.log(`Current DVN: ${currentDecoded[0][4].join(", ")}`);
   
-  // Set to the DVN that works
-  console.log(`\nSetting to: ${SONIC_DVN_FOR_ARB}`);
-  
-  const dvnConfigData = ethers.utils.defaultAbiCoder.encode(
-    ["tuple(uint64 confirmations, uint8 requiredDVNCount, uint8 optionalDVNCount, uint8 optionalDVNThreshold, address[] requiredDVNs, address[] optionalDVNs)"],
+  // ULN Config expecting ARBITRUM DVN
+  const ulnConfig = ethers.utils.defaultAbiCoder.encode(
+    ['tuple(uint64 confirmations, uint8 requiredDVNCount, uint8 optionalDVNCount, uint8 optionalDVNThreshold, address[] requiredDVNs, address[] optionalDVNs)'],
     [{
-      confirmations: 1, // Less confirmations for faster testing
+      confirmations: 1,
       requiredDVNCount: 1,
       optionalDVNCount: 0,
       optionalDVNThreshold: 0,
-      requiredDVNs: [SONIC_DVN_FOR_ARB],
-      optionalDVNs: [],
+      requiredDVNs: [ARB_LZ_DVN],
+      optionalDVNs: []
     }]
   );
   
-  const tx = await endpoint.setConfig(HUB, receiveLib, [
-    { eid: ARB_EID, configType: 2, config: dvnConfigData }
-  ], { gasLimit: 300000 });
-  console.log(`TX: ${tx.hash}`);
+  const configs = [{
+    eid: ARB_EID,
+    configType: 2,
+    config: ulnConfig
+  }];
+  
+  console.log("\nUpdating Hub receive config...");
+  const tx = await endpoint.setConfig(HUB_ADDRESS, SONIC_RECEIVE_LIB, configs);
+  console.log("TX:", tx.hash);
   await tx.wait();
-  console.log(`✅ Done!`);
+  console.log("✓ Hub now expects Arbitrum DVN for messages from Arbitrum!");
   
   // Verify
-  const newConfig = await endpoint.getConfig(HUB, receiveLib, ARB_EID, 2);
-  const newDecoded = ethers.utils.defaultAbiCoder.decode(
-    ["tuple(uint64, uint8, uint8, uint8, address[], address[])"],
-    newConfig
+  console.log("\nVerifying...");
+  const endpointRead = await ethers.getContractAt(
+    ["function getConfig(address oapp, address lib, uint32 eid, uint32 configType) external view returns (bytes memory config)"],
+    SONIC_LZ_ENDPOINT
   );
-  console.log(`\nVerified DVN: ${newDecoded[0][4].join(", ")}`);
+  const config = await endpointRead.getConfig(HUB_ADDRESS, SONIC_RECEIVE_LIB, ARB_EID, 2);
+  const decoded = ethers.utils.defaultAbiCoder.decode(
+    ['tuple(uint64 confirmations, uint8 requiredDVNCount, uint8 optionalDVNCount, uint8 optionalDVNThreshold, address[] requiredDVNs, address[] optionalDVNs)'],
+    config
+  );
+  console.log("New requiredDVNs:", decoded[0].requiredDVNs);
 }
 
 main().catch(console.error);

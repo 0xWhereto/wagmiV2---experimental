@@ -1,45 +1,25 @@
-import hardhat, { ethers } from "hardhat";
+import { ethers } from "hardhat";
 
-const GATEWAYS: Record<string, string> = {
-  arbitrum: "0x187ddD9a94236Ba6d22376eE2E3C4C834e92f34e",
-  base: "0xB712543E7fB87C411AAbB10c6823cf39bbEBB4Bb",
-  ethereum: "0xba36FC6568B953f691dd20754607590C59b7646a",
-};
+const NEW_GATEWAY = "0x2d603F7B0d06Bd5f6232Afe1991aF3D103d68071";
 
 async function main() {
-  const network = hardhat.network.name;
-  const gatewayAddress = GATEWAYS[network];
+  console.log("=== Check Gateway Tokens ===");
   
-  if (!gatewayAddress) {
-    console.log(`Network ${network} not configured`);
-    return;
-  }
-
-  const gateway = await ethers.getContractAt("GatewayVault", gatewayAddress);
+  const gateway = await ethers.getContractAt("GatewayVault", NEW_GATEWAY);
   
-  console.log(`\n=== ${network.toUpperCase()} Gateway ===`);
-  console.log(`Address: ${gatewayAddress}`);
+  // Get all available tokens
+  const tokens = await gateway.getAllAvailableTokens();
+  console.log("Linked tokens:", tokens.length);
   
-  const count = await gateway.getAvailableTokenLength();
-  console.log(`Linked tokens: ${count}`);
-  
-  if (count.gt(0)) {
-    const tokens = await gateway.getAllAvailableTokens();
-    for (const t of tokens) {
-      console.log(`\n  ${t.tokenSymbol}:`);
-      console.log(`    Address: ${t.tokenAddress}`);
-      console.log(`    Synthetic: ${t.syntheticTokenAddress}`);
-      console.log(`    Paused: ${t.onPause}`);
-      console.log(`    MinBridge: ${t.minBridgeAmt.toString()}`);
-    }
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    console.log(`\n[${i}] ${t.tokenSymbol}`);
+    console.log(`  Original token: ${t.tokenAddress}`);
+    console.log(`  Synthetic address: ${t.syntheticTokenAddress}`);
+    console.log(`  Decimals delta: ${t.decimalsDelta}`);
+    console.log(`  Paused: ${t.onPause}`);
+    console.log(`  Balance: ${t.tokenBalance.toString()}`);
   }
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
-
-
+main().catch(console.error);

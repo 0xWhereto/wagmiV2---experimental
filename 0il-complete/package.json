@@ -1,0 +1,29 @@
+{
+  "name": "0il-complete",
+  "version": "1.0.0",
+  "description": "0IL Protocol - Complete implementation with all bugs fixed",
+  "scripts": {
+    "install:all": "npm install && cd keeper && npm install && cd ../frontend && npm install",
+    "compile": "npx hardhat compile",
+    "deploy:local": "npx hardhat run scripts/deploy.ts --network localhost",
+    "deploy:sonic": "npx hardhat run scripts/deploy.ts --network sonic",
+    "node": "npx hardhat node",
+    "keeper": "cd keeper && npm run dev",
+    "frontend": "cd frontend && npm run dev",
+    "start": "concurrently \"npm run node\" \"sleep 5 && npm run deploy:local\" \"npm run keeper\" \"npm run frontend\"",
+    "start:prod": "concurrently \"npm run keeper\" \"npm run frontend\"",
+    "test": "npx hardhat test",
+    "clean": "rm -rf artifacts cache"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@types/node": "^20.0.0",
+    "concurrently": "^8.2.0",
+    "hardhat": "^2.19.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -41,14 +41,15 @@ contract MIM is ERC20, ERC20Permit, Ownable, ReentrancyGuard {
     /// @notice Fee tier for MIM/USDC pool (0.01% = 100 for stablecoins)
     uint24 public constant POOL_FEE = 100; // 0.01% fee tier
     
-    /// @notice Tick range for 1:1 dollar parity with decimal adjustment
-    /// sUSDC has 6 decimals, MIM has 18 decimals
-    /// sUSDC (0xa56...) < MIM (0xd2f...) by address, so sUSDC is token0
-    /// price = MIM/sUSDC (token1/token0) = 1e18/1e6 = 1e12
-    /// tick = ln(1e12) / ln(1.0001) ≈ +276325
-    /// Using ±0.5% range: +275700 to +276900 (tick spacing 1 for 0.01% fee)
-    int24 public constant TICK_LOWER = 275700; // ~0.995 of 1:1 parity
-    int24 public constant TICK_UPPER = 276900; // ~1.005 of 1:1 parity
+    /// @notice Tick range - set dynamically based on token ordering
+    /// For 1:1 peg with 6 vs 18 decimal adjustment:
+    /// If USDC is token0 (lower address): price = MIM/USDC = 1e12, tick ≈ +276325
+    /// If MIM is token0 (lower address): price = USDC/MIM = 1e-12, tick ≈ -276325
+    int24 public immutable TICK_LOWER;
+    int24 public immutable TICK_UPPER;
+    
+    /// @notice Whether USDC is token0 (lower address)
+    bool public immutable usdcIsToken0;
     
     /// @notice Events
     event MinterSet(address indexed minter, uint256 allowance);
@@ -79,6 +80,27 @@ contract MIM is ERC20, ERC20Permit, Ownable, ReentrancyGuard {
         if (_usdc == address(0) || _positionManager == address(0)) revert ZeroAddress();
         usdc = _usdc;
         positionManager = INonfungiblePositionManager(_positionManager);
+        
+        // Determine token ordering
+        // MIM address is known at construction via address(this)
+        usdcIsToken0 = _usdc < address(this);
+        
+        // Set tick range based on token ordering
+        // For 1:1 peg between 6 decimal USDC and 18 decimal MIM:
+        // tick = ln(price) / ln(1.0001) where price = token1/token0 in raw units
+        if (usdcIsToken0) {
+            // USDC is token0, MIM is token1
+            // price = MIM/USDC = 1e12 in raw units for 1:1 USD peg
+            // tick = ln(1e12) / ln(1.0001) ≈ 276325
+            TICK_LOWER = 275700;  // ~0.995 parity
+            TICK_UPPER = 276900;  // ~1.005 parity
+        } else {
+            // MIM is token0, USDC is token1
+            // price = USDC/MIM = 1e-12 in raw units for 1:1 USD peg
+            // tick = ln(1e-12) / ln(1.0001) ≈ -276325
+            TICK_LOWER = -276900; // ~0.995 parity (inverted)
+            TICK_UPPER = -275700; // ~1.005 parity (inverted)
+        }
         
         // Approve position manager to spend USDC held by this contract
         IERC20(_usdc).approve(_positionManager, type(uint256).max);
@@ -215,16 +237,22 @@ contract MIM is ERC20, ERC20Permit, Ownable, ReentrancyGuard {
         uint256 usdcAmount,
         uint256 mimAmount
     ) internal returns (uint128 liquidity) {
+        // Determine token ordering for params
+        address token0 = usdcIsToken0 ? usdc : address(this);
+        address token1 = usdcIsToken0 ? address(this) : usdc;
+        uint256 amount0Desired = usdcIsToken0 ? usdcAmount : mimAmount;
+        uint256 amount1Desired = usdcIsToken0 ? mimAmount : usdcAmount;
+        
         if (liquidityPositionId == 0) {
             // Create new position
             INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
-                token0: usdc < address(this) ? usdc : address(this),
-                token1: usdc < address(this) ? address(this) : usdc,
+                token0: token0,
+                token1: token1,
                 fee: POOL_FEE,
                 tickLower: TICK_LOWER,
                 tickUpper: TICK_UPPER,
-                amount0Desired: usdc < address(this) ? usdcAmount : mimAmount,
-                amount1Desired: usdc < address(this) ? mimAmount : usdcAmount,
+                amount0Desired: amount0Desired,
+                amount1Desired: amount1Desired,
                 amount0Min: 0,
                 amount1Min: 0,
                 recipient: address(this),
@@ -237,8 +265,8 @@ contract MIM is ERC20, ERC20Permit, Ownable, ReentrancyGuard {
             INonfungiblePositionManager.IncreaseLiquidityParams memory params = 
                 INonfungiblePositionManager.IncreaseLiquidityParams({
                     tokenId: liquidityPositionId,
-                    amount0Desired: usdc < address(this) ? usdcAmount : mimAmount,
-                    amount1Desired: usdc < address(this) ? mimAmount : usdcAmount,
+                    amount0Desired: amount0Desired,
+                    amount1Desired: amount1Desired,
                     amount0Min: 0,
                     amount1Min: 0,
                     deadline: block.timestamp
@@ -296,7 +324,7 @@ contract MIM is ERC20, ERC20Permit, Ownable, ReentrancyGuard {
         totalLiquidity -= liquidityToRemove;
         
         // Return USDC amount (depends on token order)
-        usdcReceived = usdc < address(this) ? amount0 : amount1;
+        usdcReceived = usdcIsToken0 ? amount0 : amount1;
     }
     
     /**

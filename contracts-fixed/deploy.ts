@@ -1,7 +1,7 @@
 /**
  * Deployment Script for Fixed 0IL Contracts
  *
- * This script deploys the fixed versions of MIMStakingVault and LeverageAMM.
+ * This script deploys the fixed versions of MIMStakingVault, LeverageAMM, and V3LPVault.
  *
  * Run: npx hardhat run contracts-fixed/deploy.ts --network sonic
  *
@@ -16,6 +16,9 @@ const CURRENT_ADDRESSES = {
   V3LPVault: '0x1139d155D39b2520047178444C51D3D70204650F',
   SimpleOracle: '0xD8680463F66C7bF74C61A2634aF4d7094ee9F749',
   sWETH: '0x50c42dEAcD8Fc9773493ED674b675bE577f2634b',
+  // Uniswap V3 infrastructure (Sonic)
+  PositionManager: '0x0000000000000000000000000000000000000000', // TODO: Set Sonic V3 Position Manager
+  MIM_WETH_Pool: '0x0000000000000000000000000000000000000000', // TODO: Set MIM/WETH pool address
   // Treasury address - UPDATE THIS before deployment
   Treasury: '0x0000000000000000000000000000000000000000', // TODO: Set your treasury address
 };
@@ -100,6 +103,46 @@ async function main() {
   await setTreasuryTx.wait();
   console.log('  ✅ Treasury set');
 
+  // ============ Deploy V3LPVaultFixed (Optional) ============
+
+  let v3LPVaultAddress = CURRENT_ADDRESSES.V3LPVault; // Default to existing
+
+  if (CURRENT_ADDRESSES.PositionManager !== '0x0000000000000000000000000000000000000000' &&
+      CURRENT_ADDRESSES.MIM_WETH_Pool !== '0x0000000000000000000000000000000000000000') {
+    console.log('\n═══════════════════════════════════════════════════════════');
+    console.log('  Deploying V3LPVaultFixed');
+    console.log('═══════════════════════════════════════════════════════════\n');
+
+    const V3LPVaultFixed = await ethers.getContractFactory('V3LPVaultFixed');
+    const v3LPVault = await V3LPVaultFixed.deploy(
+      CURRENT_ADDRESSES.PositionManager,
+      CURRENT_ADDRESSES.MIM_WETH_Pool,
+      { gasLimit: 5_000_000 }
+    );
+
+    await v3LPVault.waitForDeployment();
+    v3LPVaultAddress = await v3LPVault.getAddress();
+
+    console.log(`  ✅ V3LPVaultFixed deployed to: ${v3LPVaultAddress}`);
+    console.log(`     - PositionManager: ${CURRENT_ADDRESSES.PositionManager}`);
+    console.log(`     - Pool: ${CURRENT_ADDRESSES.MIM_WETH_Pool}`);
+
+    // Set default layers
+    console.log('  Setting default layers...');
+    const setLayersTx = await v3LPVault.setDefaultLayers();
+    await setLayersTx.wait();
+    console.log('  ✅ Default layers set');
+
+    // Set LeverageAMM as operator
+    console.log('  Setting LeverageAMMFixed as operator...');
+    const setOperatorTx = await v3LPVault.setOperator(leverageAMMAddress, true);
+    await setOperatorTx.wait();
+    console.log('  ✅ LeverageAMMFixed set as operator');
+  } else {
+    console.log('\n  ⚠️  Skipping V3LPVaultFixed deployment (PositionManager/Pool not set)');
+    console.log('      Using existing V3LPVault:', CURRENT_ADDRESSES.V3LPVault);
+  }
+
   // ============ Verification ============
 
   console.log('\n═══════════════════════════════════════════════════════════');
@@ -123,12 +166,14 @@ async function main() {
   console.log('  New Contract Addresses:');
   console.log(`    MIMStakingVaultFixed: ${stakingVaultAddress}`);
   console.log(`    LeverageAMMFixed:     ${leverageAMMAddress}`);
+  console.log(`    V3LPVaultFixed:       ${v3LPVaultAddress}`);
 
   console.log('\n  UPDATE config.ts with these addresses:');
   console.log(`
 export const FIXED_ADDRESSES = {
   MIMStakingVaultFixed: '${stakingVaultAddress}',
   LeverageAMMFixed: '${leverageAMMAddress}',
+  V3LPVaultFixed: '${v3LPVaultAddress}',
   // ... rest of addresses
 };
 `);

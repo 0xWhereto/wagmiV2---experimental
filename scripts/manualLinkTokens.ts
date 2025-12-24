@@ -1,184 +1,63 @@
-import hardhat, { ethers } from "hardhat";
-
-/**
- * Manually link remote tokens to synthetic tokens on Sonic Hub
- */
+import { ethers } from "hardhat";
 
 const HUB_ADDRESS = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
+const NEW_GATEWAY = "0x2d603F7B0d06Bd5f6232Afe1991aF3D103d68071";
+const ARB_EID = 30110;
 
-// Synthetic token addresses on Sonic
-const SYNTHETIC_TOKENS = {
-  sWETH: "0x5E501C482952c1F2D58a4294F9A97759968c5125",
-  sUSDT: "0x72dFC771E515423E5B0CD2acf703d0F7eb30bdEa",
-  sUSDC: "0xa56a2C5678f8e10F61c6fBafCB0887571B9B432B",
-};
+// Existing synthetic tokens on Hub
+const sUSDC = ethers.utils.getAddress("0xa1b52ebc6e37d057e4df26b72ed89b05d60e9bd4");
+const sWETH = ethers.utils.getAddress("0x50c42deacd8fc9773493ed674b675be577f2634b");
+const sWBTC = ethers.utils.getAddress("0xe04496b766afbf58b968dae4c067ce6e9ec65ec5");
 
-// Chain EIDs
-const CHAIN_EIDS = {
-  arbitrum: 30110,
-  base: 30184,
-  ethereum: 30101,
-};
-
-// Gateway addresses
-const GATEWAYS = {
-  arbitrum: "0xb867d9E9D374E8b1165bcDF6D3f66d1A9AAd2447",
-  base: "0xb867d9E9D374E8b1165bcDF6D3f66d1A9AAd2447",
-  ethereum: "0xc792AB26B1f1670B2f5081F8d74bD6a451aD6b44",
-};
-
-// Remote tokens to link
-const REMOTE_TOKENS = [
-  // Arbitrum
-  { 
-    synthetic: "sWETH", 
-    chain: "arbitrum", 
-    remoteAddress: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", 
-    decimals: 18,
-    minBridge: ethers.utils.parseEther("0.001") 
-  },
-  { 
-    synthetic: "sUSDT", 
-    chain: "arbitrum", 
-    remoteAddress: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", 
-    decimals: 6,
-    minBridge: ethers.utils.parseUnits("1", 6) 
-  },
-  { 
-    synthetic: "sUSDC", 
-    chain: "arbitrum", 
-    remoteAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 
-    decimals: 6,
-    minBridge: ethers.utils.parseUnits("1", 6) 
-  },
-  // Base
-  { 
-    synthetic: "sWETH", 
-    chain: "base", 
-    remoteAddress: "0x4200000000000000000000000000000000000006", 
-    decimals: 18,
-    minBridge: ethers.utils.parseEther("0.001") 
-  },
-  { 
-    synthetic: "sUSDC", 
-    chain: "base", 
-    remoteAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 
-    decimals: 6,
-    minBridge: ethers.utils.parseUnits("1", 6) 
-  },
-  // Ethereum
-  { 
-    synthetic: "sWETH", 
-    chain: "ethereum", 
-    remoteAddress: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 
-    decimals: 18,
-    minBridge: ethers.utils.parseEther("0.001") 
-  },
-  { 
-    synthetic: "sUSDT", 
-    chain: "ethereum", 
-    remoteAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7", 
-    decimals: 6,
-    minBridge: ethers.utils.parseUnits("1", 6) 
-  },
-  { 
-    synthetic: "sUSDC", 
-    chain: "ethereum", 
-    remoteAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 
-    decimals: 6,
-    minBridge: ethers.utils.parseUnits("1", 6) 
-  },
-];
-
-// Synthetic tokens all have decimals matching their type (WETH=18, stables=6)
-const SYNTHETIC_DECIMALS = {
-  sWETH: 18,
-  sUSDT: 6,
-  sUSDC: 6,
-};
+// Remote tokens on Arbitrum
+const USDC = ethers.utils.getAddress("0xaf88d065e77c8cc2239327c5edb3a432268e5831");
+const WETH = ethers.utils.getAddress("0x82af49447d8a07e3bd95bd0d56f35241523fbab1");
+const WBTC = ethers.utils.getAddress("0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f");
 
 async function main() {
-  const network = hardhat.network.name;
-  if (network !== "sonic") {
-    console.log("This script should be run on Sonic network");
-    return;
-  }
-
   const [deployer] = await ethers.getSigners();
-  console.log(`\n========================================`);
-  console.log(`Manually Linking Remote Tokens on SONIC`);
-  console.log(`========================================`);
-  console.log(`Deployer: ${deployer.address}`);
-  console.log(`Balance: ${ethers.utils.formatEther(await deployer.getBalance())} S`);
-
-  const hub = await ethers.getContractAt("SyntheticTokenHub", HUB_ADDRESS);
-
-  // Link each remote token
-  console.log("\n--- Linking Remote Tokens ---");
+  console.log("=== Manual Link Tokens to Hub ===");
+  console.log("Owner:", deployer.address);
   
-  for (const token of REMOTE_TOKENS) {
-    const syntheticAddress = SYNTHETIC_TOKENS[token.synthetic as keyof typeof SYNTHETIC_TOKENS];
-    const srcEid = CHAIN_EIDS[token.chain as keyof typeof CHAIN_EIDS];
-    const gateway = GATEWAYS[token.chain as keyof typeof GATEWAYS];
-    const syntheticDecimals = SYNTHETIC_DECIMALS[token.synthetic as keyof typeof SYNTHETIC_DECIMALS];
-    
-    // Calculate decimals delta: syntheticDecimals - remoteDecimals
-    const decimalsDelta = syntheticDecimals - token.decimals;
-    
-    console.log(`\nLinking ${token.synthetic} <- ${token.chain} (${token.remoteAddress})`);
-    console.log(`  Synthetic: ${syntheticAddress}`);
-    console.log(`  Chain EID: ${srcEid}`);
-    console.log(`  Gateway: ${gateway}`);
-    console.log(`  Decimals delta: ${decimalsDelta}`);
-    console.log(`  Min bridge: ${token.minBridge.toString()}`);
-    
+  const hub = await ethers.getContractAt("SyntheticTokenHub", HUB_ADDRESS);
+  
+  // Check if tokens exist
+  console.log("\nChecking synthetic tokens...");
+  for (const [name, addr] of [["sUSDC", sUSDC], ["sWETH", sWETH], ["sWBTC", sWBTC]]) {
+    const code = await ethers.provider.getCode(addr);
+    console.log(`${name} at ${addr}: ${code !== "0x" ? "EXISTS" : "NOT DEPLOYED"}`);
+  }
+  
+  // Link tokens
+  const tokens = [
+    { name: "USDC", synth: sUSDC, remote: USDC, decimals: 6, synthDecimals: 6, minBridge: "1000000" },
+    { name: "WETH", synth: sWETH, remote: WETH, decimals: 18, synthDecimals: 18, minBridge: "100000000000000" },
+    { name: "WBTC", synth: sWBTC, remote: WBTC, decimals: 8, synthDecimals: 8, minBridge: "10000" },
+  ];
+  
+  for (const token of tokens) {
+    console.log(`\nLinking ${token.name}...`);
     try {
-      // First try static call to get detailed error
-      console.log(`  Simulating...`);
-      await hub.callStatic.manualLinkRemoteToken(
-        syntheticAddress,
-        srcEid,
-        token.remoteAddress,
-        gateway,
-        decimalsDelta,
-        token.minBridge,
-        { gasLimit: 500000 }
-      );
-      console.log(`  Simulation passed, executing...`);
+      // decimalsDelta = synthDecimals - remoteDecimals
+      const decimalsDelta = token.synthDecimals - token.decimals;
       
       const tx = await hub.manualLinkRemoteToken(
-        syntheticAddress,
-        srcEid,
-        token.remoteAddress,
-        gateway,
-        decimalsDelta,
-        token.minBridge,
-        { gasLimit: 500000 }
+        token.synth,      // _syntheticTokenAddress
+        ARB_EID,          // _srcEid
+        token.remote,     // _remoteTokenAddress
+        NEW_GATEWAY,      // _gatewayVault
+        decimalsDelta,    // _decimalsDelta
+        token.minBridge   // _minBridgeAmt
       );
-      console.log(`  TX: ${tx.hash}`);
+      console.log("TX:", tx.hash);
       await tx.wait();
-      console.log(`  ✓ Linked!`);
+      console.log(`✓ ${token.name} linked!`);
     } catch (e: any) {
-      if (e.message?.includes("Already linked")) {
-        console.log(`  ✓ Already linked`);
-      } else {
-        console.log(`  ✗ Failed: ${e.message?.slice(0, 200)}`);
-        if (e.reason) console.log(`  Reason: ${e.reason}`);
-        if (e.error?.data) console.log(`  Error data: ${e.error.data}`);
-      }
+      console.log(`✗ ${token.name} failed:`, e.reason || e.message?.slice(0, 80));
     }
   }
-
-  console.log("\n========================================");
-  console.log("LINKING COMPLETE!");
-  console.log("========================================");
-  console.log("\nYou can now bridge tokens from Arbitrum/Base/Ethereum to Sonic.");
+  
+  console.log("\n✓ Done!");
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
-
+main().catch(console.error);

@@ -6,6 +6,7 @@ This package contains fixed versions of the 0IL protocol contracts with bug fixe
 
 | Bug ID | Contract | Issue | Fix |
 |--------|----------|-------|-----|
+| BUG-002 | V3LPVault | `_getPositionAmounts()` returns wrong values (liquidity/2) | Proper Uniswap V3 tick-based calculation |
 | BUG-003 | MIMStakingVault | Withdrawal fails when accrued interest > cash | Caps withdrawal at available liquidity |
 | BUG-005 | LeverageAMM | `lastWeeklyPayment` never initialized | Constructor sets `block.timestamp` |
 
@@ -15,9 +16,11 @@ This package contains fixed versions of the 0IL protocol contracts with bug fixe
 contracts-fixed/
 ├── MIMStakingVaultFixed.sol    # Fixed staking vault contract
 ├── LeverageAMMFixed.sol        # Fixed leverage AMM contract
+├── V3LPVaultFixed.sol          # Fixed V3 LP vault with correct position amounts
 ├── abis/
 │   ├── MIMStakingVaultFixed.json
-│   └── LeverageAMMFixed.json
+│   ├── LeverageAMMFixed.json
+│   └── V3LPVaultFixed.json
 ├── config.ts                   # Addresses and ABIs configuration
 ├── hooks.ts                    # React hooks for wagmi
 ├── deploy.ts                   # Hardhat deployment script
@@ -121,6 +124,38 @@ function withdraw(uint256 shares) external returns (uint256 assets) {
 - `initializeWeeklyPayment()` - Fix for already deployed contracts
 - Constructor initializes `lastWeeklyPayment = block.timestamp`
 
+### V3LPVaultFixed
+
+The critical fix is in `_getPositionAmounts()` which now properly calculates token amounts:
+
+```solidity
+// OLD (BROKEN):
+function _getPositionAmounts(uint256 tokenId) internal view returns (uint256, uint256) {
+    (,,,,,,, uint128 liquidity,,,,) = positionManager.positions(tokenId);
+    return (uint256(liquidity) / 2, uint256(liquidity) / 2);  // WRONG!
+}
+
+// NEW (FIXED):
+function _getPositionAmounts(uint256 tokenId) internal view returns (uint256 amount0, uint256 amount1) {
+    // Get position tick range and liquidity
+    (,,,,,int24 tickLower, int24 tickUpper, uint128 liquidity,,,,) = positionManager.positions(tokenId);
+
+    // Get current price from pool
+    (uint160 sqrtPriceX96, int24 currentTick,,,,,) = pool.slot0();
+
+    // Calculate amounts based on current tick vs position range
+    // Uses proper Uniswap V3 math with sqrtPrice calculations
+    ...
+}
+```
+
+New view functions:
+- `getTotalAssets()` - Returns correct (amount0, amount1) across all layers
+- `getPendingFees()` - Returns pending fees (fee0, fee1)
+- `getLayerCount()` - Number of configured layers
+- `getLayer(index)` - Get layer configuration
+- `getLayerPosition(index)` - Get position info with amounts
+
 ## Migration Notes
 
 ### For Existing Users
@@ -132,18 +167,37 @@ function withdraw(uint256 shares) external returns (uint256 assets) {
 ### For New Deployments
 
 1. Deploy `MIMStakingVaultFixed` first
-2. Deploy `LeverageAMMFixed` with new staking vault address
-3. Configure borrower permissions
-4. Deploy new `WToken` pointing to new `LeverageAMMFixed`
-5. Set V3LPVault layers and operator
+2. Deploy `V3LPVaultFixed` (if deploying new) or use existing
+3. Deploy `LeverageAMMFixed` with new staking vault and V3LPVault addresses
+4. Configure borrower permissions on staking vault
+5. Set LeverageAMM as operator on V3LPVault
+6. Call `setDefaultLayers()` on V3LPVault
+7. Deploy new `WToken` pointing to new `LeverageAMMFixed`
 
-## Remaining Issue
-
-**BUG-007** (V3LPVault layers not configured) requires calling:
+## Using V3LPVault Hooks
 
 ```typescript
-// On the existing V3LPVault contract
-await v3LPVault.setDefaultLayers();
-```
+import {
+  useV3LPVaultStats,
+  useV3LPVaultLayer,
+  useV3LPVaultCollectFees,
+  useV3LPVaultRebalance,
+} from './contracts-fixed';
 
-This is a configuration issue, not a code bug, and can be fixed on the existing deployment.
+function V3VaultComponent() {
+  const { totalToken0, totalToken1, pendingFee0, pendingFee1, layerCount } = useV3LPVaultStats();
+  const { layer, position, formatted } = useV3LPVaultLayer(0);
+  const { collectFees, isPending } = useV3LPVaultCollectFees();
+  const { rebalance } = useV3LPVaultRebalance();
+
+  return (
+    <div>
+      <p>Total Token0: {formatted?.totalToken0}</p>
+      <p>Total Token1: {formatted?.totalToken1}</p>
+      <p>Layer 0 Range: {formatted?.tickRange}</p>
+      <button onClick={collectFees}>Collect Fees</button>
+      <button onClick={rebalance}>Rebalance</button>
+    </div>
+  );
+}
+```

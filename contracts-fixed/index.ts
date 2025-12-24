@@ -42,6 +42,8 @@ export type {
   AddressKey,
   VaultStats,
   LeverageStats,
+  V3LPVaultStats,
+  LiquidityLayer,
 } from './config';
 
 // React Hooks
@@ -57,6 +59,15 @@ export {
   useWeeklyPaymentStatus,
   useRebalance,
   useWeeklyPayment,
+
+  // V3LPVault hooks (FIXED - proper position amount calculation)
+  useV3LPVaultStats,
+  useV3LPVaultLayer,
+  useV3LPVaultAddLiquidity,
+  useV3LPVaultRemoveLiquidity,
+  useV3LPVaultCollectFees,
+  useV3LPVaultRebalance,
+  useV3LPVaultSetDefaultLayers,
 
   // Admin hooks
   useInitializeWeeklyPayment,

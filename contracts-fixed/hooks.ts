@@ -8,6 +8,7 @@
 import { useReadContract, useWriteContract, useAccount, useWaitForTransactionReceipt } from 'wagmi';
 import { parseUnits, formatUnits } from 'viem';
 import { CONTRACTS, FIXED_ADDRESSES, ABIS, SONIC_CHAIN_ID, formatWad, formatPercent } from './config';
+import type { LiquidityLayer } from './config';
 
 // ============ MIMStakingVault (sMIM) Hooks ============
 
@@ -406,6 +407,260 @@ export function useInitializeWeeklyPayment() {
 
   return {
     initialize,
+    hash,
+    isPending,
+    isConfirming,
+    isSuccess,
+    error,
+  };
+}
+
+// ============ V3LPVault (Fixed) Hooks ============
+
+/**
+ * Read V3LPVault statistics - FIXED version with proper position amount calculation
+ */
+export function useV3LPVaultStats() {
+  const { data: totalAssets } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'getTotalAssets',
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const { data: pendingFees } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'getPendingFees',
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const { data: layerCount } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'getLayerCount',
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const { data: token0 } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'token0',
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const { data: token1 } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'token1',
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const [amount0, amount1] = (totalAssets as [bigint, bigint]) || [BigInt(0), BigInt(0)];
+  const [fee0, fee1] = (pendingFees as [bigint, bigint]) || [BigInt(0), BigInt(0)];
+
+  return {
+    totalToken0: amount0,
+    totalToken1: amount1,
+    pendingFee0: fee0,
+    pendingFee1: fee1,
+    layerCount: layerCount ? Number(layerCount) : 0,
+    token0: token0 as `0x${string}` | undefined,
+    token1: token1 as `0x${string}` | undefined,
+    formatted: {
+      totalToken0: formatWad(amount0),
+      totalToken1: formatWad(amount1),
+      pendingFee0: formatWad(fee0, 6),
+      pendingFee1: formatWad(fee1, 6),
+    },
+  };
+}
+
+/**
+ * Get individual layer information
+ */
+export function useV3LPVaultLayer(index: number) {
+  const { data: layer, isLoading, error } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'getLayer',
+    args: [BigInt(index)],
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const { data: position } = useReadContract({
+    address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+    abi: ABIS.V3LPVaultFixed,
+    functionName: 'getLayerPosition',
+    args: [BigInt(index)],
+    chainId: SONIC_CHAIN_ID,
+  });
+
+  const layerData = layer as LiquidityLayer | undefined;
+  const positionData = position as { token0Amount: bigint; token1Amount: bigint; fee0Owed: bigint; fee1Owed: bigint } | undefined;
+
+  return {
+    layer: layerData,
+    position: positionData,
+    isLoading,
+    error,
+    formatted: layerData ? {
+      tickRange: `${layerData.tickLower} to ${layerData.tickUpper}`,
+      weight: `${Number(layerData.weight) / 100}%`,
+      liquidity: formatWad(layerData.liquidity),
+      hasPosition: layerData.tokenId > 0,
+    } : null,
+  };
+}
+
+/**
+ * Add liquidity to V3LPVault
+ */
+export function useV3LPVaultAddLiquidity() {
+  const { writeContract, data: hash, isPending, error } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const addLiquidity = (
+    amount0Desired: bigint,
+    amount1Desired: bigint,
+    amount0Min: bigint = BigInt(0),
+    amount1Min: bigint = BigInt(0)
+  ) => {
+    writeContract({
+      address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+      abi: ABIS.V3LPVaultFixed,
+      functionName: 'addLiquidity',
+      args: [amount0Desired, amount1Desired, amount0Min, amount1Min],
+      chainId: SONIC_CHAIN_ID,
+    });
+  };
+
+  return {
+    addLiquidity,
+    hash,
+    isPending,
+    isConfirming,
+    isSuccess,
+    error,
+  };
+}
+
+/**
+ * Remove liquidity from V3LPVault
+ */
+export function useV3LPVaultRemoveLiquidity() {
+  const { writeContract, data: hash, isPending, error } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const removeLiquidity = (
+    liquidityPercent: bigint,
+    amount0Min: bigint = BigInt(0),
+    amount1Min: bigint = BigInt(0)
+  ) => {
+    writeContract({
+      address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+      abi: ABIS.V3LPVaultFixed,
+      functionName: 'removeLiquidity',
+      args: [liquidityPercent, amount0Min, amount1Min],
+      chainId: SONIC_CHAIN_ID,
+    });
+  };
+
+  return {
+    removeLiquidity,
+    hash,
+    isPending,
+    isConfirming,
+    isSuccess,
+    error,
+  };
+}
+
+/**
+ * Collect fees from V3LPVault
+ */
+export function useV3LPVaultCollectFees() {
+  const { writeContract, data: hash, isPending, error } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const collectFees = () => {
+    writeContract({
+      address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+      abi: ABIS.V3LPVaultFixed,
+      functionName: 'collectFees',
+      chainId: SONIC_CHAIN_ID,
+    });
+  };
+
+  return {
+    collectFees,
+    hash,
+    isPending,
+    isConfirming,
+    isSuccess,
+    error,
+  };
+}
+
+/**
+ * Rebalance V3LPVault positions
+ */
+export function useV3LPVaultRebalance() {
+  const { writeContract, data: hash, isPending, error } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const rebalance = () => {
+    writeContract({
+      address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+      abi: ABIS.V3LPVaultFixed,
+      functionName: 'rebalance',
+      chainId: SONIC_CHAIN_ID,
+    });
+  };
+
+  return {
+    rebalance,
+    hash,
+    isPending,
+    isConfirming,
+    isSuccess,
+    error,
+  };
+}
+
+/**
+ * Set default layers (owner only)
+ */
+export function useV3LPVaultSetDefaultLayers() {
+  const { writeContract, data: hash, isPending, error } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const setDefaultLayers = () => {
+    writeContract({
+      address: FIXED_ADDRESSES.V3LPVaultFixed as `0x${string}`,
+      abi: ABIS.V3LPVaultFixed,
+      functionName: 'setDefaultLayers',
+      chainId: SONIC_CHAIN_ID,
+    });
+  };
+
+  return {
+    setDefaultLayers,
     hash,
     isPending,
     isConfirming,

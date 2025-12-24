@@ -1,139 +1,110 @@
-import hardhat, { ethers } from "hardhat";
-import { Options } from "@layerzerolabs/lz-v2-utilities";
+import { ethers } from "hardhat";
 
-/**
- * Setup an already-deployed Gateway (set peer + link tokens)
- */
+// New Arbitrum Gateway
+const NEW_GATEWAY = "0x2d603F7B0d06Bd5f6232Afe1991aF3D103d68071";
 
-const LZ_GAS_LIMIT = 500000;
-
-// Hub on Sonic
+// Sonic Config
 const HUB_ADDRESS = "0x7ED2cCD9C9a17eD939112CC282D42c38168756Dd";
-const SONIC_EID = 30332;
-
-// Synthetic token addresses on Sonic
-const SYNTHETIC_TOKENS = {
-  sWETH: "0x5E501C482952c1F2D58a4294F9A97759968c5125",
-  sUSDT: "0x72dFC771E515423E5B0CD2acf703d0F7eb30bdEa",
-  sUSDC: "0xa56a2C5678f8e10F61c6fBafCB0887571B9B432B",
-};
-
-// Synthetic decimals
-const SYNTHETIC_DECIMALS: Record<keyof typeof SYNTHETIC_TOKENS, number> = {
-  sWETH: 18,
-  sUSDT: 6,
-  sUSDC: 6,
-};
-
-// New Gateway addresses per chain
-const NEW_GATEWAYS: Record<string, string> = {
-  base: "0xB712543E7fB87C411AAbB10c6823cf39bbEBB4Bb",
-};
-
-// Token configs per chain
-const TOKEN_CONFIGS: Record<string, Array<{
-  symbol: string;
-  address: string;
-  decimals: number;
-  syntheticSymbol: keyof typeof SYNTHETIC_TOKENS;
-}>> = {
-  base: [
-    { symbol: "WETH", address: "0x4200000000000000000000000000000000000006", decimals: 18, syntheticSymbol: "sWETH" },
-    { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6, syntheticSymbol: "sUSDC" },
-  ],
-};
-
-function addressToBytes32(addr: string): string {
-  return ethers.utils.hexZeroPad(addr, 32).toLowerCase();
-}
+const ARB_EID = 30110;
 
 async function main() {
-  const network = hardhat.network.name;
-  
-  const gatewayAddress = NEW_GATEWAYS[network];
-  const tokens = TOKEN_CONFIGS[network];
-  
-  if (!gatewayAddress || !tokens) {
-    console.log(`Network ${network} not configured.`);
-    return;
-  }
-
   const [deployer] = await ethers.getSigners();
-  
-  console.log(`\n========================================`);
-  console.log(`Setting up Gateway on ${network.toUpperCase()}`);
-  console.log(`========================================`);
-  console.log(`Deployer: ${deployer.address}`);
-  console.log(`Balance: ${ethers.utils.formatEther(await deployer.getBalance())} ETH`);
-  console.log(`Gateway: ${gatewayAddress}`);
+  console.log("=== Setup New Arbitrum Gateway ===");
+  console.log("Deployer:", deployer.address);
+  console.log("Gateway:", NEW_GATEWAY);
+  console.log();
 
-  const gateway = await ethers.getContractAt("GatewayVault", gatewayAddress);
+  const network = await ethers.provider.getNetwork();
+  console.log("Current network:", network.name, "chainId:", network.chainId);
   
-  // 1. Set peer to Hub
-  console.log("\n--- Step 1: Setting peer to Hub ---");
-  try {
-    const currentPeer = await gateway.peers(SONIC_EID);
-    const expectedPeer = addressToBytes32(HUB_ADDRESS);
-    
-    if (currentPeer.toLowerCase() === expectedPeer.toLowerCase()) {
-      console.log("Peer already set correctly");
-    } else {
-      const tx = await gateway.setPeer(SONIC_EID, expectedPeer, { gasLimit: 100000 });
-      console.log(`TX: ${tx.hash}`);
-      await tx.wait();
-      console.log("✓ Peer set!");
-    }
-  } catch (e: any) {
-    console.log(`Failed: ${e.message?.slice(0, 100)}`);
-  }
-
-  // 2. Link tokens
-  console.log("\n--- Step 2: Linking tokens ---");
-  const lzOptions = Options.newOptions().addExecutorLzReceiveOption(LZ_GAS_LIMIT, 0).toHex().toString();
+  // Existing synthetic tokens on Sonic Hub - use getAddress for proper checksum
+  const sUSDC = ethers.utils.getAddress("0xa1b52ebc6e37d057e4df26b72ed89b05d60e9bd4");
+  const sWETH = ethers.utils.getAddress("0x50c42deacd8fc9773493ed674b675be577f2634b");
+  const sWBTC = ethers.utils.getAddress("0xe04496b766afbf58b968dae4c067ce6e9ec65ec5");
   
-  for (const token of tokens) {
-    const syntheticAddress = SYNTHETIC_TOKENS[token.syntheticSymbol];
-    const syntheticDecimals = SYNTHETIC_DECIMALS[token.syntheticSymbol];
+  // Original tokens on Arbitrum - use getAddress for proper checksum
+  const USDC = ethers.utils.getAddress("0xaf88d065e77c8cc2239327c5edb3a432268e5831");
+  const WETH = ethers.utils.getAddress("0x82af49447d8a07e3bd95bd0d56f35241523fbab1");
+  const WBTC = ethers.utils.getAddress("0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f");
+  
+  if (network.chainId === 42161) {
+    // On Arbitrum - link tokens
+    console.log("\n=== Linking tokens on Arbitrum ===");
+    console.log("USDC:", USDC, "-> sUSDC:", sUSDC);
+    console.log("WETH:", WETH, "-> sWETH:", sWETH);
+    console.log("WBTC:", WBTC, "-> sWBTC:", sWBTC);
     
-    console.log(`\n${token.symbol}:`);
+    const gateway = await ethers.getContractAt("GatewayVault", NEW_GATEWAY);
     
-    const tokenConfig = [{
-      onPause: false,
-      tokenAddress: token.address,
-      syntheticTokenDecimals: syntheticDecimals,
-      syntheticTokenAddress: syntheticAddress,
-      minBridgeAmt: token.decimals === 18 
-        ? ethers.utils.parseEther("0.001") 
-        : ethers.utils.parseUnits("1", token.decimals),
-    }];
-
+    // Prepare token configs
+    const tokenConfigs = [
+      {
+        onPause: false,
+        tokenAddress: USDC,
+        syntheticTokenDecimals: 6,
+        syntheticTokenAddress: sUSDC,
+        minBridgeAmt: ethers.utils.parseUnits("1", 6) // 1 USDC
+      },
+      {
+        onPause: false,
+        tokenAddress: WETH,
+        syntheticTokenDecimals: 18,
+        syntheticTokenAddress: sWETH,
+        minBridgeAmt: ethers.utils.parseUnits("0.0001", 18) // 0.0001 WETH
+      },
+      {
+        onPause: false,
+        tokenAddress: WBTC,
+        syntheticTokenDecimals: 8,
+        syntheticTokenAddress: sWBTC,
+        minBridgeAmt: ethers.utils.parseUnits("0.0001", 8) // 0.0001 WBTC
+      }
+    ];
+    
+    // Get LZ quote first
+    console.log("\nGetting LZ quote for linkTokenToHub...");
+    const options = ethers.utils.solidityPack(
+      ['uint16', 'uint8', 'uint16', 'uint8', 'uint128'],
+      [3, 1, 17, 1, 500000] // executor lz options with 500k gas
+    );
+    
     try {
-      const fee = await gateway.quoteLinkTokenToHub(tokenConfig, lzOptions);
-      console.log(`  Fee: ${ethers.utils.formatEther(fee)} ETH`);
+      const quote = await gateway.quoteLinkTokenToHub(tokenConfigs, options);
+      console.log("Quote nativeFee:", ethers.utils.formatEther(quote.nativeFee), "ETH");
       
-      const tx = await gateway.linkTokenToHub(tokenConfig, lzOptions, {
-        value: fee.mul(150).div(100),
-        gasLimit: 600000,
+      // Link tokens
+      console.log("\nLinking tokens...");
+      const tx = await gateway.linkTokenToHub(tokenConfigs, options, {
+        value: quote.nativeFee
       });
-      console.log(`  TX: ${tx.hash}`);
+      console.log("TX:", tx.hash);
       await tx.wait();
-      console.log(`  ✓ Linked!`);
+      console.log("✓ Tokens linked on gateway!");
     } catch (e: any) {
-      console.log(`  ✗ Failed: ${e.message?.slice(0, 100)}`);
+      console.error("Error:", e.reason || e.message);
     }
+    
+  } else if (network.chainId === 146) {
+    // On Sonic - update hub peer
+    console.log("\n=== Updating Hub peer on Sonic ===");
+    
+    const hub = await ethers.getContractAt("SyntheticTokenHub", HUB_ADDRESS);
+    const gatewayBytes32 = ethers.utils.hexZeroPad(NEW_GATEWAY, 32);
+    
+    console.log("Setting peer for Arbitrum EID", ARB_EID);
+    console.log("Gateway bytes32:", gatewayBytes32);
+    
+    const tx = await hub.setPeer(ARB_EID, gatewayBytes32);
+    console.log("TX:", tx.hash);
+    await tx.wait();
+    console.log("✓ Hub peer updated!");
+    
+    // Verify
+    const peer = await hub.peers(ARB_EID);
+    console.log("Verified peer:", peer);
+  } else {
+    console.log("Unknown network. Run on arbitrum or sonic.");
   }
-
-  // Summary
-  console.log("\n--- Final state ---");
-  const finalCount = await gateway.getAvailableTokenLength();
-  console.log(`Total linked tokens: ${finalCount}`);
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
-
-
+main().catch(console.error);

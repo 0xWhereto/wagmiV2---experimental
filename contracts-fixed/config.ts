@@ -9,6 +9,7 @@
 
 import MIMStakingVaultFixedABI from './abis/MIMStakingVaultFixed.json';
 import LeverageAMMFixedABI from './abis/LeverageAMMFixed.json';
+import V3LPVaultFixedABI from './abis/V3LPVaultFixed.json';
 
 // ============ Chain Configuration ============
 
@@ -35,6 +36,7 @@ export const FIXED_ADDRESSES = {
   // After deploying fixed contracts, update these addresses:
   MIMStakingVaultFixed: '0x0000000000000000000000000000000000000000', // TODO: Update after deployment
   LeverageAMMFixed: '0x0000000000000000000000000000000000000000', // TODO: Update after deployment
+  V3LPVaultFixed: '0x0000000000000000000000000000000000000000', // TODO: Update after deployment
 
   // These remain the same (no changes needed):
   MIM: CURRENT_ADDRESSES.MIM,
@@ -50,6 +52,7 @@ export const FIXED_ADDRESSES = {
 export const ABIS = {
   MIMStakingVaultFixed: MIMStakingVaultFixedABI.abi,
   LeverageAMMFixed: LeverageAMMFixedABI.abi,
+  V3LPVaultFixed: V3LPVaultFixedABI.abi,
 } as const;
 
 // ============ Contract Configurations ============
@@ -63,6 +66,11 @@ export const CONTRACTS = {
   LeverageAMMFixed: {
     address: FIXED_ADDRESSES.LeverageAMMFixed,
     abi: ABIS.LeverageAMMFixed,
+    chainId: SONIC_CHAIN_ID,
+  },
+  V3LPVaultFixed: {
+    address: FIXED_ADDRESSES.V3LPVaultFixed,
+    abi: ABIS.V3LPVaultFixed,
     chainId: SONIC_CHAIN_ID,
   },
 } as const;
@@ -116,6 +124,22 @@ export interface LeverageStats {
   pendingWTokenFees: bigint;
 }
 
+export interface V3LPVaultStats {
+  totalToken0: bigint;
+  totalToken1: bigint;
+  pendingFee0: bigint;
+  pendingFee1: bigint;
+  layerCount: number;
+}
+
+export interface LiquidityLayer {
+  tickLower: number;
+  tickUpper: number;
+  weight: bigint;
+  tokenId: bigint;
+  liquidity: bigint;
+}
+
 // ============ Helper Functions ============
 
 /**
@@ -159,6 +183,9 @@ export function checkDeployment(): { ready: boolean; missing: string[] } {
   }
   if (!isValidAddress(FIXED_ADDRESSES.LeverageAMMFixed)) {
     missing.push('LeverageAMMFixed');
+  }
+  if (!isValidAddress(FIXED_ADDRESSES.V3LPVaultFixed)) {
+    missing.push('V3LPVaultFixed');
   }
 
   return {
