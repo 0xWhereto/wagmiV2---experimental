@@ -1,3 +1,6 @@
 {
-  "/page": "app/page.js"
+  "/dashboard/page": "app/dashboard/page.js",
+  "/mim/page": "app/mim/page.js",
+  "/page": "app/page.js",
+  "/bridge/page": "app/bridge/page.js"
 }
