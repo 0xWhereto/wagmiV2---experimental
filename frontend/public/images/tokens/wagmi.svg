@@ -1,0 +1,14 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="64" cy="64" r="64" fill="url(#wagmi-gradient)"/>
+  <path d="M28 48L42 80L54 56L64 80L74 56L86 80L100 48" stroke="white" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="wagmi-gradient" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6B6B"/>
+      <stop offset="0.5" stop-color="#FF8E53"/>
+      <stop offset="1" stop-color="#FFA726"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+
+

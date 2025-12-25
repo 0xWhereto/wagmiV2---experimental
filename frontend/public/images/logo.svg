@@ -1,0 +1,35 @@
+<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logoGradient" x1="22" y1="0" x2="22" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E8E8E8"/>
+      <stop offset="0.5" stop-color="#A0A0A0"/>
+      <stop offset="1" stop-color="#606060"/>
+    </linearGradient>
+  </defs>
+  <!-- Outer compass points -->
+  <!-- Top point -->
+  <path d="M22 2L24 8H20L22 2Z" fill="url(#logoGradient)"/>
+  <!-- Bottom point -->
+  <path d="M22 42L20 36H24L22 42Z" fill="url(#logoGradient)"/>
+  <!-- Left point -->
+  <path d="M2 22L8 20V24L2 22Z" fill="url(#logoGradient)"/>
+  <!-- Right point -->
+  <path d="M42 22L36 24V20L42 22Z" fill="url(#logoGradient)"/>
+  
+  <!-- Curved ornamental elements -->
+  <!-- Top-left curve -->
+  <path d="M10 10C10 10 14 6 22 6C22 6 16 10 16 16C16 16 12 12 10 10Z" fill="url(#logoGradient)" fill-opacity="0.8"/>
+  <!-- Top-right curve -->
+  <path d="M34 10C34 10 30 6 22 6C22 6 28 10 28 16C28 16 32 12 34 10Z" fill="url(#logoGradient)" fill-opacity="0.8"/>
+  <!-- Bottom-left curve -->
+  <path d="M10 34C10 34 14 38 22 38C22 38 16 34 16 28C16 28 12 32 10 34Z" fill="url(#logoGradient)" fill-opacity="0.8"/>
+  <!-- Bottom-right curve -->
+  <path d="M34 34C34 34 30 38 22 38C22 38 28 34 28 28C28 28 32 32 34 34Z" fill="url(#logoGradient)" fill-opacity="0.8"/>
+  
+  <!-- Central sword/blade -->
+  <ellipse cx="22" cy="22" rx="6" ry="14" fill="url(#logoGradient)"/>
+  <!-- Sword handle/guard -->
+  <ellipse cx="22" cy="22" rx="10" ry="4" fill="url(#logoGradient)"/>
+  <!-- Center circle -->
+  <circle cx="22" cy="22" r="3" fill="#FCFCFC"/>
+</svg>
