@@ -22,6 +22,31 @@ export const KNOWN_POOL_PAIRS = [
   { token0Symbol: "MIM", token1Symbol: "sUSDC", fees: [100, 500, 3000] }, // 0.01% is the main peg pool
   { token0Symbol: "MIM", token1Symbol: "sWETH", fees: [100, 500, 3000] }, // 0IL sWETH vault pool
   { token0Symbol: "MIM", token1Symbol: "sWBTC", fees: [100, 500, 3000] }, // 0IL sWBTC vault pool
+  { token0Symbol: "sWETH", token1Symbol: "MIM", fees: [100, 500, 3000] }, // Alternative ordering
+  { token0Symbol: "sWBTC", token1Symbol: "MIM", fees: [100, 500, 3000] }, // Alternative ordering
+  { token0Symbol: "sUSDC", token1Symbol: "MIM", fees: [100, 500, 3000] }, // Alternative ordering
+] as const;
+
+// Hardcoded deployed 0IL pools (in case factory lookup fails)
+export const DEPLOYED_0IL_POOLS = [
+  {
+    address: "0x3Be1A1975D2bd22fDE3079f2eee7140Cb55BE556" as `0x${string}`,
+    token0Symbol: "sUSDC",
+    token1Symbol: "MIM", 
+    fee: 100, // 0.01%
+  },
+  {
+    address: "0x1b287D79E341C52B2aeC78a3803042D222C8Ab24" as `0x${string}`,
+    token0Symbol: "sWETH",
+    token1Symbol: "MIM",
+    fee: 100, // 0.01%
+  },
+  {
+    address: "0xeCeBFb34875DA11ea6512BDa2b016EcEdb971Fb5" as `0x${string}`,
+    token0Symbol: "sWBTC",
+    token1Symbol: "MIM",
+    fee: 500, // 0.05%
+  },
 ] as const;
 
 // Token prices for TVL calculation (would use oracle in production)
@@ -165,6 +190,78 @@ export function useAllPools() {
             // Pool doesn't exist or error fetching, skip
             console.debug(`Pool ${pair.token0Symbol}/${pair.token1Symbol} ${fee / 10000}% not found`);
           }
+        }
+      }
+
+      // Also check hardcoded deployed 0IL pools (in case factory lookup missed them)
+      for (const deployedPool of DEPLOYED_0IL_POOLS) {
+        // Skip if already found
+        if (foundPools.some(p => p.address.toLowerCase() === deployedPool.address.toLowerCase())) {
+          continue;
+        }
+
+        const token0 = hubTokens.find(t => t.symbol === deployedPool.token0Symbol);
+        const token1 = hubTokens.find(t => t.symbol === deployedPool.token1Symbol);
+
+        if (!token0?.address || !token1?.address) continue;
+
+        try {
+          // Get pool data directly from the known address
+          const [slot0, liquidity, token0Balance, token1Balance] = await Promise.all([
+            publicClient.readContract({
+              address: deployedPool.address,
+              abi: UniswapV3PoolABI,
+              functionName: "slot0",
+            }) as unknown as Promise<any[]>,
+            publicClient.readContract({
+              address: deployedPool.address,
+              abi: UniswapV3PoolABI,
+              functionName: "liquidity",
+            }) as unknown as Promise<bigint>,
+            publicClient.readContract({
+              address: token0.address as `0x${string}`,
+              abi: ERC20ABI,
+              functionName: "balanceOf",
+              args: [deployedPool.address],
+            }) as unknown as Promise<bigint>,
+            publicClient.readContract({
+              address: token1.address as `0x${string}`,
+              abi: ERC20ABI,
+              functionName: "balanceOf",
+              args: [deployedPool.address],
+            }) as unknown as Promise<bigint>,
+          ]);
+
+          // Calculate TVL
+          const token0Value = parseFloat(formatUnits(token0Balance, token0.decimals || 18)) * (TOKEN_PRICES[token0.symbol] || 0);
+          const token1Value = parseFloat(formatUnits(token1Balance, token1.decimals || 18)) * (TOKEN_PRICES[token1.symbol] || 0);
+          const tvlUsd = token0Value + token1Value;
+
+          // Mock volume and APY
+          const volume24h = tvlUsd * (0.05 + Math.random() * 0.15);
+          const apy = volume24h > 0 ? ((volume24h * 365 * (deployedPool.fee / 1000000)) / tvlUsd) * 100 : 0;
+
+          foundPools.push({
+            address: deployedPool.address,
+            token0Symbol: token0.symbol,
+            token1Symbol: token1.symbol,
+            token0Address: token0.address as `0x${string}`,
+            token1Address: token1.address as `0x${string}`,
+            token0Decimals: token0.decimals || 18,
+            token1Decimals: token1.decimals || 18,
+            fee: deployedPool.fee,
+            sqrtPriceX96: slot0[0] as bigint,
+            tick: Number(slot0[1]),
+            liquidity,
+            token0Balance,
+            token1Balance,
+            tvlUsd,
+            volume24h,
+            apy,
+          });
+          console.log(`Added hardcoded pool: ${deployedPool.token0Symbol}/${deployedPool.token1Symbol}`);
+        } catch (e) {
+          console.debug(`Failed to fetch hardcoded pool ${deployedPool.address}:`, e);
         }
       }
 
