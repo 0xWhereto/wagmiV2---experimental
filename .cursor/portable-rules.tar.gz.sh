@@ -17,3 +17,4 @@ echo "  1. Copy cursor-compound-rules.tar.gz to the project root"
 echo "  2. Run: tar -xzvf cursor-compound-rules.tar.gz"
 echo "  3. Delete the archive: rm cursor-compound-rules.tar.gz"
 
+

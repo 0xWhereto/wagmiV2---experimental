@@ -65,3 +65,4 @@ echo "To deploy contracts to Wagmi Chain Local:"
 echo "  npx hardhat run scripts/deployHub.ts --network wagmi-local"
 echo ""
 
+

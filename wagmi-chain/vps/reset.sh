@@ -21,3 +21,4 @@ echo "✅ Chain reset complete. All data has been wiped."
 echo ""
 echo "To start fresh: ./start.sh"
 
+

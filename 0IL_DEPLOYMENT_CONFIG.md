@@ -292,3 +292,4 @@ When deploying new vaults:
 - [ ] Update frontend MAGICPOOL_ADDRESSES
 - [ ] Add decimal adjustment if asset has non-18 decimals
 
+

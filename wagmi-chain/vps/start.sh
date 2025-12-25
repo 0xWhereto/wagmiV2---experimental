@@ -42,3 +42,4 @@ else
     echo "⚠️  Services may still be starting. Check with: docker compose ps"
 fi
 
+

@@ -64,3 +64,4 @@ echo "✅ Contract deployment complete!"
 echo ""
 echo "📋 Deployment info saved to: wagmi-chain/local/deployment.json"
 
+

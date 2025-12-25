@@ -218,3 +218,4 @@ Update frontend/lib/contracts/config.ts:
 
 main().catch(console.error);
 
+
