@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, ExternalLink, TrendingUp, BarChart3, DollarSign, Activity } from 'lucide-react';
+import { ArrowLeft, ExternalLink, TrendingUp, BarChart3, DollarSign, Activity, RefreshCw } from 'lucide-react';
 import Image from 'next/image';
 import { getTokenLogoBySymbol } from '@/lib/tokens/logos';
-import { useReadContract } from 'wagmi';
+import { useReadContract, usePublicClient } from 'wagmi';
 import { formatUnits } from 'viem';
 
 const HUB_CHAIN_ID = 146;
@@ -111,6 +111,9 @@ interface TickData {
   liquidityGross: bigint;
   price0: number;
   price1: number;
+  // Actual token amounts in this tick range
+  token0Amount: number;
+  token1Amount: number;
 }
 
 interface PoolStats {
@@ -138,6 +141,11 @@ const TOKEN_PRICES: Record<string, number> = {
 export function PoolAnalytics({ poolAddress, token0Symbol, token1Symbol, fee, onBack }: PoolAnalyticsProps) {
   const [activeTab, setActiveTab] = useState<'TVL' | 'Volume' | 'Fees' | 'Liquidity'>('Liquidity');
   const [priceDirection, setPriceDirection] = useState<'0to1' | '1to0'>('0to1');
+  const [realTickData, setRealTickData] = useState<TickData[]>([]);
+  const [isLoadingTicks, setIsLoadingTicks] = useState(false);
+  const [hoveredTick, setHoveredTick] = useState<TickData | null>(null);
+  
+  const publicClient = usePublicClient({ chainId: HUB_CHAIN_ID });
 
   // Fetch pool slot0
   const { data: slot0, isLoading: slot0Loading } = useReadContract({
@@ -239,37 +247,95 @@ export function PoolAnalytics({ poolAddress, token0Symbol, token1Symbol, fee, on
     };
   }, [slot0, liquidity, token0Balance, token1Balance, token0Decimals, token1Decimals, token0Symbol, token1Symbol, fee]);
 
-  // For tick data, we'll show a simplified view since fetching many ticks requires batching
-  const tickData = useMemo<TickData[]>(() => {
-    if (!poolStats) return [];
+  // Fetch real tick data from the pool contract
+  const fetchTickData = useCallback(async () => {
+    if (!publicClient || !poolStats || !token0Decimals || !token1Decimals) return;
     
-    // Generate simulated tick distribution around current price
-    // In production, you'd fetch actual tick data from an indexer
+    setIsLoadingTicks(true);
     const currentTick = poolStats.currentTick;
-    const bars: TickData[] = [];
     const tickSpacing = fee === 100 ? 1 : fee === 500 ? 10 : fee === 3000 ? 60 : 200;
+    const numTicks = 60; // Fetch 60 ticks around current price
     
-    for (let i = -30; i <= 30; i++) {
+    const ticksToFetch: number[] = [];
+    for (let i = -numTicks / 2; i <= numTicks / 2; i++) {
       const tick = Math.floor(currentTick / tickSpacing) * tickSpacing + i * tickSpacing;
-      const distance = Math.abs(i);
-      // Simulate liquidity concentration around current tick
-      const baseLiquidity = Number(poolStats.liquidity / BigInt(1e12));
-      const simulatedLiquidity = baseLiquidity * Math.exp(-distance * 0.1);
-      
-      if (simulatedLiquidity > 0) {
-        const price0 = Math.pow(1.0001, tick);
-        bars.push({
-          tick,
-          liquidityGross: BigInt(Math.floor(simulatedLiquidity)),
-          liquidityNet: BigInt(0),
-          price0,
-          price1: 1 / price0,
-        });
-      }
+      ticksToFetch.push(tick);
     }
     
-    return bars;
-  }, [poolStats, fee]);
+    try {
+      // Batch fetch tick data
+      const tickResults = await Promise.all(
+        ticksToFetch.map(async (tick) => {
+          try {
+            const result = await publicClient.readContract({
+              address: poolAddress as `0x${string}`,
+              abi: POOL_ABI,
+              functionName: 'ticks',
+              args: [tick],
+            }) as [bigint, bigint, bigint, bigint, bigint, bigint, number, boolean];
+            
+            return {
+              tick,
+              liquidityGross: result[0],
+              liquidityNet: result[1],
+              initialized: result[7],
+            };
+          } catch {
+            return null;
+          }
+        })
+      );
+      
+      // Filter initialized ticks and calculate token amounts
+      const dec0 = Number(token0Decimals);
+      const dec1 = Number(token1Decimals);
+      const decimalAdjustment = Math.pow(10, dec0 - dec1);
+      
+      const processedTicks: TickData[] = tickResults
+        .filter((t): t is NonNullable<typeof t> => t !== null && t.liquidityGross > BigInt(0))
+        .map((t) => {
+          const price0Raw = Math.pow(1.0001, t.tick);
+          const price0 = price0Raw * decimalAdjustment;
+          const price1 = 1 / price0;
+          
+          // Calculate token amounts using Uniswap V3 math
+          // L = sqrt(x * y * P), so we can estimate amounts
+          const sqrtPrice = Math.sqrt(price0Raw);
+          const liquidity = Number(t.liquidityGross);
+          
+          // Simplified calculation for display purposes
+          // token0 amount = L / sqrt(P), token1 amount = L * sqrt(P)
+          const token0Amount = liquidity / sqrtPrice / Math.pow(10, dec0);
+          const token1Amount = liquidity * sqrtPrice / Math.pow(10, dec1);
+          
+          return {
+            tick: t.tick,
+            liquidityGross: t.liquidityGross,
+            liquidityNet: t.liquidityNet,
+            price0,
+            price1,
+            token0Amount,
+            token1Amount,
+          };
+        });
+      
+      setRealTickData(processedTicks);
+    } catch (err) {
+      console.error('Error fetching tick data:', err);
+    } finally {
+      setIsLoadingTicks(false);
+    }
+  }, [publicClient, poolStats, poolAddress, fee, token0Decimals, token1Decimals]);
+  
+  // Fetch tick data when pool stats are available
+  useEffect(() => {
+    if (poolStats && !isLoadingTicks && realTickData.length === 0) {
+      fetchTickData();
+    }
+  }, [poolStats, fetchTickData, isLoadingTicks, realTickData.length]);
+
+  // Use real tick data if available, otherwise empty
+  const tickData = realTickData;
 
   const loading = slot0Loading || liquidityLoading || !poolStats;
 
@@ -513,7 +579,23 @@ export function PoolAnalytics({ poolAddress, token0Symbol, token1Symbol, fee, on
       {/* Liquidity Distribution Chart */}
       <div className="bg-zinc-900/50 rounded-xl p-4">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-zinc-400 text-sm">Liquidity Distribution</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-zinc-400 text-sm">Liquidity Distribution</h3>
+            <button
+              onClick={() => {
+                setRealTickData([]);
+                fetchTickData();
+              }}
+              disabled={isLoadingTicks}
+              className="p-1 hover:bg-zinc-700 rounded transition-colors disabled:opacity-50"
+              title="Refresh tick data"
+            >
+              <RefreshCw className={`w-3 h-3 text-zinc-500 ${isLoadingTicks ? 'animate-spin' : ''}`} />
+            </button>
+            {isLoadingTicks && (
+              <span className="text-xs text-zinc-500">Loading actual tick data...</span>
+            )}
+          </div>
           <div className="flex items-center gap-1 bg-zinc-800 rounded-lg p-1">
             {(['TVL', 'Volume', 'Fees', 'Liquidity'] as const).map((tab) => (
               <button
@@ -535,37 +617,61 @@ export function PoolAnalytics({ poolAddress, token0Symbol, token1Symbol, fee, on
         <div className="relative h-64 mt-4">
           {activeTab === 'Liquidity' && liquidityBars.length > 0 ? (
             <div className="absolute inset-0 flex items-end justify-center gap-[1px]">
-              {liquidityBars.map((bar, i) => (
-                <div
-                  key={bar.tick}
-                  className="group relative flex-1 max-w-2"
-                  style={{ height: '100%' }}
-                >
+              {liquidityBars.map((bar, i) => {
+                // Find the corresponding tick data with token amounts
+                const tickInfo = tickData.find(t => t.tick === bar.tick);
+                
+                return (
                   <div
-                    className={`absolute bottom-0 w-full rounded-t transition-colors ${
-                      bar.isActive
-                        ? 'bg-emerald-500'
-                        : bar.tick < (poolStats?.currentTick || 0)
-                        ? 'bg-cyan-600/60'
-                        : 'bg-cyan-600/60'
-                    }`}
-                    style={{ height: `${Math.max(bar.height, 1)}%` }}
-                  />
-                  
-                  {/* Tooltip */}
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
-                    <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-2 text-xs whitespace-nowrap shadow-xl">
-                      <div className="text-zinc-400">Tick: {bar.tick}</div>
-                      <div className="text-white">
-                        Price: {formatPrice(bar.price)} {priceDirection === '0to1' ? token1Symbol : token0Symbol}
-                      </div>
-                      <div className="text-zinc-400">
-                        Liquidity: {bar.liquidity.toLocaleString()}
+                    key={bar.tick}
+                    className="group relative flex-1 max-w-2"
+                    style={{ height: '100%' }}
+                    onMouseEnter={() => tickInfo && setHoveredTick(tickInfo)}
+                    onMouseLeave={() => setHoveredTick(null)}
+                  >
+                    <div
+                      className={`absolute bottom-0 w-full rounded-t transition-colors ${
+                        bar.isActive
+                          ? 'bg-emerald-500'
+                          : bar.tick < (poolStats?.currentTick || 0)
+                          ? 'bg-cyan-600/60'
+                          : 'bg-cyan-600/60'
+                      }`}
+                      style={{ height: `${Math.max(bar.height, 1)}%` }}
+                    />
+                    
+                    {/* Tooltip with actual token amounts */}
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
+                      <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-3 text-xs whitespace-nowrap shadow-xl min-w-[180px]">
+                        <div className="text-zinc-400 mb-1">Tick: {bar.tick}</div>
+                        <div className="text-white font-medium mb-2">
+                          Price: {formatPrice(bar.price)} {priceDirection === '0to1' ? token1Symbol : token0Symbol}
+                        </div>
+                        <div className="border-t border-zinc-700 pt-2 space-y-1">
+                          <div className="flex justify-between">
+                            <span className="text-zinc-400">{token0Symbol}:</span>
+                            <span className="text-white font-mono">
+                              {tickInfo?.token0Amount?.toLocaleString(undefined, { maximumFractionDigits: 4 }) || '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-zinc-400">{token1Symbol}:</span>
+                            <span className="text-white font-mono">
+                              {tickInfo?.token1Amount?.toLocaleString(undefined, { maximumFractionDigits: 4 }) || '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between pt-1 border-t border-zinc-700">
+                            <span className="text-zinc-400">Liquidity:</span>
+                            <span className="text-cyan-400 font-mono">
+                              {bar.liquidity.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               
               {/* Current price line */}
               <div 
@@ -574,6 +680,13 @@ export function PoolAnalytics({ poolAddress, token0Symbol, token1Symbol, fee, on
                   left: `${((liquidityBars.findIndex(b => b.isActive) + 0.5) / liquidityBars.length) * 100}%` 
                 }}
               />
+            </div>
+          ) : isLoadingTicks ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="flex items-center gap-2 text-zinc-500 text-sm">
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                Fetching on-chain tick data...
+              </div>
             </div>
           ) : (
             <div className="h-full flex items-center justify-center">
@@ -585,6 +698,30 @@ export function PoolAnalytics({ poolAddress, token0Symbol, token1Symbol, fee, on
             </div>
           )}
         </div>
+
+        {/* Hovered tick info panel */}
+        {hoveredTick && (
+          <div className="mt-2 p-3 bg-zinc-800/50 rounded-lg border border-zinc-700">
+            <div className="grid grid-cols-4 gap-4 text-sm">
+              <div>
+                <div className="text-zinc-500 text-xs">Tick</div>
+                <div className="text-white font-mono">{hoveredTick.tick}</div>
+              </div>
+              <div>
+                <div className="text-zinc-500 text-xs">Price</div>
+                <div className="text-white font-mono">{formatPrice(hoveredTick.price0)}</div>
+              </div>
+              <div>
+                <div className="text-zinc-500 text-xs">{token0Symbol}</div>
+                <div className="text-white font-mono">{hoveredTick.token0Amount?.toFixed(4) || '0'}</div>
+              </div>
+              <div>
+                <div className="text-zinc-500 text-xs">{token1Symbol}</div>
+                <div className="text-white font-mono">{hoveredTick.token1Amount?.toFixed(4) || '0'}</div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Price Range Indicator */}
         {liquidityBars.length > 0 && (
